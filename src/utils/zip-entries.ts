@@ -1,0 +1,216 @@
+/**
+ * [INPUT]: 依赖 fs-extra、临时目录、路径、流式管道与 ZIP 条目元数据
+ * [OUTPUT]: 对外提供 ZIP 条目读取、写入、前缀读取和枚举能力
+ * [POS]: CLI 归档基础设施，统一本地/嵌套 ZIP 的资源访问和临时目录生命周期
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
+
+import * as fs from 'fs-extra';
+import os from 'os';
+import path from 'path';
+import { pipeline } from 'stream/promises';
+import {
+  type Entry,
+  open as openZipFile,
+  type ZipFile as YauzlZipFile,
+} from 'yauzl';
+
+export function readEntry(
+  entry: Entry,
+  zipFile: YauzlZipFile,
+): Promise<Buffer> {
+  const buffers: Buffer[] = [];
+  return new Promise((resolve, reject) => {
+    zipFile.openReadStream(entry, (err, stream) => {
+      if (err) {
+        return reject(err);
+      }
+      if (!stream) {
+        return reject(new Error(`Unable to read zip entry: ${entry.fileName}`));
+      }
+      stream.on('data', (chunk: Buffer) => {
+        buffers.push(chunk);
+      });
+      stream.on('end', () => {
+        // a single chunk (a cached Range read) is handed back as-is, not copied
+        resolve(buffers.length === 1 ? buffers[0] : Buffer.concat(buffers));
+      });
+      stream.on('error', (err) => {
+        reject(err);
+      });
+    });
+  });
+}
+
+export function writeEntry(
+  entry: Entry,
+  zipFile: YauzlZipFile,
+  outputPath: string,
+): Promise<void> {
+  fs.ensureDirSync(path.dirname(outputPath));
+  return new Promise((resolve, reject) => {
+    zipFile.openReadStream(entry, (err, stream) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      if (!stream) {
+        reject(new Error(`Unable to read zip entry: ${entry.fileName}`));
+        return;
+      }
+      pipeline(stream, fs.createWriteStream(outputPath)).then(resolve, reject);
+    });
+  });
+}
+
+export function readEntryPrefix(
+  entry: Entry,
+  zipFile: YauzlZipFile,
+  maxBytes: number,
+): Promise<Buffer> {
+  if (maxBytes <= 0) {
+    return Promise.resolve(Buffer.alloc(0));
+  }
+
+  const buffers: Buffer[] = [];
+  let length = 0;
+
+  return new Promise((resolve, reject) => {
+    zipFile.openReadStream(entry, (err, stream) => {
+      if (err) {
+        return reject(err);
+      }
+      if (!stream) {
+        return reject(new Error(`Unable to read zip entry: ${entry.fileName}`));
+      }
+
+      let settled = false;
+      let expectedDestroyError: Error | undefined;
+      const cleanup = () => {
+        stream.off('data', onData);
+        stream.off('end', onEnd);
+        stream.off('error', onError);
+      };
+      const finish = (destroyStream = false) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        stream.off('data', onData);
+        stream.off('end', onEnd);
+        if (!destroyStream) {
+          stream.off('error', onError);
+        }
+        resolve(Buffer.concat(buffers, length));
+
+        if (destroyStream) {
+          expectedDestroyError = new Error('zip entry prefix read complete');
+          stream.destroy(expectedDestroyError);
+        }
+      };
+      const onData = (chunk: Buffer) => {
+        const remaining = maxBytes - length;
+        if (remaining <= 0) {
+          finish(true);
+          return;
+        }
+
+        const slice =
+          chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
+        buffers.push(slice);
+        length += slice.length;
+        if (length >= maxBytes) {
+          finish(true);
+        }
+      };
+      const onEnd = () => finish();
+      const onError = (error: Error) => {
+        if (settled && error === expectedDestroyError) {
+          cleanup();
+          return;
+        }
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      stream.on('data', onData);
+      stream.once('end', onEnd);
+      stream.once('error', onError);
+    });
+  });
+}
+
+export async function enumZipEntries(
+  zipFn: string,
+  callback: (
+    entry: Entry,
+    zipFile: YauzlZipFile,
+    nestedPath?: string,
+  ) => Promise<any> | undefined,
+  nestedPath = '',
+) {
+  return new Promise((resolve, reject) => {
+    openZipFile(
+      zipFn,
+      { lazyEntries: true },
+      async (err: any, zipfile: YauzlZipFile) => {
+        if (err) {
+          return reject(err);
+        }
+
+        zipfile.on('end', resolve);
+        zipfile.on('error', reject);
+        zipfile.on('entry', async (entry) => {
+          const fullPath = nestedPath + entry.fileName;
+
+          try {
+            if (
+              !entry.fileName.endsWith('/') &&
+              entry.fileName.toLowerCase().endsWith('.hap')
+            ) {
+              const tempDir = await fs.mkdtemp(
+                path.join(os.tmpdir(), 'nested_zip_'),
+              );
+              const tempZipPath = path.join(tempDir, 'temp.zip');
+              try {
+                await new Promise((res, rej) => {
+                  zipfile.openReadStream(entry, async (err, readStream) => {
+                    if (err) return rej(err);
+                    const writeStream = fs.createWriteStream(tempZipPath);
+                    readStream.on('error', rej);
+                    readStream.pipe(writeStream);
+                    writeStream.on('finish', () => res(void 0));
+                    writeStream.on('error', rej);
+                  });
+                });
+
+                await enumZipEntries(tempZipPath, callback, `${fullPath}/`);
+              } finally {
+                await fs.remove(tempDir);
+              }
+            }
+
+            const result = callback(entry, zipfile, fullPath);
+            if (result && typeof result.then === 'function') {
+              await result;
+            }
+          } catch (error) {
+            // the rejection carries the error; logging it here too would make
+            // callers report it twice
+            zipfile.close();
+            reject(error);
+            return;
+          }
+
+          zipfile.readEntry();
+        });
+
+        zipfile.readEntry();
+      },
+    );
+  });
+}

@@ -1,0 +1,101 @@
+# Hermes base（`-base-bytecode`）等价校验：现状与待办
+
+`pakta bundle` 在 `--hermesBase auto`（默认）下用上一版 HBC 作 base 编译，让字符串 id 跨版本稳定、热更 patch 变小。`--verifyHermesBase`（默认开）并行再做一次普通编译，把两份产物反汇编后比对；任何不一致或失败都回退到普通编译。
+
+本文记录这套校验**防什么、怎么比、还缺什么**，供后续维护。代码在 `src/utils/hermes-base.ts`（`compareHermesBytecode`）、`src/utils/hermes-literals.ts`（二进制字面量缓冲区解码）、`src/utils/hermes-raw.ts`（原始操作数与完整二进制数据核对）与 `src/bundle-runner.ts`（`compileHermesByteCode`）。
+
+## 1. 防什么
+
+热更链路上的每一层校验（base 的 sha256、设备端 patch 重建后的 `bundleHash` 比对、HBC 头解析）验的都是**字节完整性**，没有一层验**程序语义**。一个合法但语义错误的 HBC 会一路绿灯，直到那个函数在用户设备上被执行。
+
+`-base-bytecode` 的 bug 面集中在**引用映射**：字符串表合并错位（`GetById` 取到别的属性名）、字面量缓冲区偏移算错（数组内容变成别的常量）、function id 指错。这些错误的共同特征是**指令序列不变，只是操作数指向变了**——所以校验必须保留语义层（解析后的字符串、寄存器、指令序列），只折叠编码层（id 编号、操作数宽度、跳转距离、缓冲区偏移）。任何"只比指令骨架"或"只查文件格式"的简化都对这类 bug 失明。
+
+## 2. 怎么比（当前实现）
+
+校验分两遍：先各起一个 `hermesc -b -dump-bytecode -pretty-disassemble`，逐函数比较并提供易读诊断；这一步没有发现差异后，再各起一个带 `-pretty-disassemble=false` 的 raw dump 核对完整操作数。两遍顺序执行，不增加编译次数，同时最多两个 dump 进程。反汇编文本流式读取（不落盘，`PAKTA_HERMES_BASE_DEBUG=1` 时保留第一遍的 pretty 文本）。
+
+| 区段 | 处理 |
+|---|---|
+| `Bytecode File Information` 等头部 | 文本头不比较；raw 核对从二进制比较运行时选项、全局函数索引、segment ID、模块与函数源码表 |
+| `Global String Table` | 不比较死字符串；有效 HBC 的字符串按二进制表恢复完整内容，而非截断或转义后的显示文本 |
+| `Array Buffer` / `Object Key Buffer` / `Object Value Buffer`（v98：`Literal Value Buffer` / `Object Key Buffer`） | 文本段本身**不比较**（见下）；无法读二进制缓冲区时整段文本仅用于诊断，不能据此判定等价 |
+| `Function<…>` / `NCFunction<…>` / `Constructor<…>` 各函数 | 头文本必须相同；正文逐行经 `normalizeDisassemblyLine` 归一化后比较；**按函数分段**，错位不级联 |
+| `Debug *` / `Textified callees table` | 排掉（只服务调试器/性能工具） |
+
+**字面量按指令比较（`src/utils/hermes-literals.ts`）**：`NewArrayWithBuffer rX, sizeHint, count, offset` / `NewObjectWithBuffer rX, sizeHint, count, keyOffset, valueOffset` 的 offset 是序列化字面量缓冲区里的**字节偏移**。校验先从两份 HBC 文件读出头部和三段缓冲区（`hbcTransform.ts` 的布局表），在每条指令处按 SLP 格式解码 `count` 个条目（tag 字节：bit 6..4 类型、bit 7 长度续字节、bit 3..0 长度低 4 位；值按类型定宽：double 8 字节、字符串 id 4/2/1 字节、int32 4 字节），字符串 id 经各自字符串表解析成文本后写进归一化后的指令行，两侧逐条比较。
+
+两种布局：
+
+| | v87–96（`split`） | v98（`shaped`） |
+|---|---|---|
+| 缓冲区 | `arrayBuffer` / `objKeyBuffer` / `objValueBuffer` | `literalValueBuffer`（数组元素与对象值共用）/ `objKeyBuffer` / `objShapeTable`（8 字节项：keyOffset u32、numProps u32） |
+| 数组 | `NewArrayWithBuffer rX, sizeHint, count, offset` | 同左，offset 指向值缓冲区 |
+| 对象 | `NewObjectWithBuffer rX, sizeHint, count, keyOffset, valueOffset` | `NewObjectWithBuffer rX, shapeIndex, valueOffset`；`NewObjectWithBufferAndParent rX, rParent, shapeIndex, valueOffset` |
+| tag 类型 6 | 1 字节字符串 id | `undefined`（无值字节）；字符串 id 只用 2/4 字节 |
+
+v98 的 shape 索引和 offset 一样只用于定位（delta 可能重排 shape 表），归一化后只留 shape 指向的键与值；`AndParent` 的父对象寄存器原样保留比较。
+
+为什么不能按 dump 的整段文本比：Hermes 的缓冲区构建器会**重叠/去重**序列化后的字面量——一个字面量的最后一个值字节可以同时是下一个字面量的 tag 字节（模糊测试实测：`61 52 | cd 09 b3 05 11`，前一段以 `[String 82]` 结尾，后一条指令的 offset 正指向 `52`）。顺序解析整段缓冲区（hermesc 的 dump 就是这么打印的）从这里开始失步，之后的条目全是噪声；delta 构建的 id 宽度不同，重叠位置也不同，于是两段"噪声"在某处不一致就被判为差异。2026-09-10 的 20 轮冒烟模糊测试里 3 次误杀全部源于此，改按指令比较后全部等价。无法读二进制缓冲区（文件结构不识别）时两侧一起比较整段文本，仅辅助诊断；即使文本相等也返回 `dump-failed` 并回退 plain，不能以丢失 offset/count 的文本确认等价。结果里 `literals: 'buffer'` 标明这一点。
+
+`normalizeDisassemblyLine` 只折叠表示层差异：按指令解析后的字面量地址、已知宽度后缀、引号外的列对齐空白、switch 表的物理偏移（含经典 `SwitchImm`）、debug 偏移。字符串内部的连续空格、跳转目标标签、寄存器均保留。未知 string ID、无法解码的字面量、未知 buffer 操作数形态直接失败；两侧都无法解析也不等价。
+
+结果三态：`equivalent` / `different`（带第一处差异：函数、行号、两侧内容，或缓冲区条目）/ `dump-failed`（dump 进程退出码非 0、无法启动、提前结束；带 stderr 末行）。后两种都放弃 base，但日志分开。
+
+**原始操作数核对**：`hermes-raw.ts` 从 raw dump 读取指令起点和操作数类型，并检查操作数与 HBC 字节一致、指令覆盖完整函数体。字符串从 small/overflow string table 与 string storage 按完整 ASCII/UTF-16 code unit 解码；BigInt、正则和 double 读取真实字节（保留 `-0` 和尾部精度）；函数引用保留索引，与顺序对齐的函数表共同检查，同名函数不能互换。地址映射为目标指令序号；整数和字符串 switch 从二进制恢复 case 值与目的地。函数运行时 flags 和参数/寄存器等字段也参与比较，剔除的仅是物理地址、debug presence 与 compact/overflow 表示。
+
+这不是一个可以忽略所有新指令的通用语义证明器。已验证的函数头范围为 HBC v87–96，以及 `hermes-compiler@250829098.0.16/.17` 的 v98 快照；升级布局或引入新的字符串/shape 引用指令时，需要复核 `hermes-raw.ts` 的解码规则及测试，不可仅扩展 diff-transform 的布局表。
+
+**零长度函数**：Static Hermes 的真实 Metro 产物可能保留 `bytecodeSizeInBytes == 0` 的死函数。raw 校验要求实际指令字节总长等于函数头声明长度，而不是要求每个函数至少有一条指令；空函数仍比较运行时元数据，遗漏整个函数头仍由总函数数检查拒绝。非空函数的指令被截断仍为 `dump-failed`。
+
+pretty 输出本身会截断长字符串与 BigInt、用函数名替代函数索引，并可能把 `-0` 显示为 `0`，因此不再以 pretty 相等作为最终结论。新增归一化规则时必须同时添加真实 HBC 负例，确保没有把语义差异折叠掉。
+
+## 3. 已完成与待办
+
+### 3.1 服务端上报校验结果 —— 已完成
+
+CLI（`26764b1`）在 `version/create` 附带 `hermesBaseOutcome: 'used' | 'rejected' | 'dump-failed' | 'none'` 与可选 `hermesBaseDetail`（首处差异或失败原因，≤ 500 个码点）。规则同其它链路字段：只发已知值、绝不发 JSON null、未知就省略字段（单独 `pakta publish` 一个 ppk 时没有校验结果，字段不出现）。outcome 从 `HermesCompileResult.outcome` 带出，与 `base` 分开：base 被拒时 `base` 仍为 null，但 outcome 说明是被拒而不是没找到。base 编译本身失败记为 `none` 并附 `base compile failed: …`。
+
+本仓库的 Go 服务通过迁移 `server/migrations/00023_update_package_hermes_base.sql` 在 `update_packages` 新增可空列 `hermes_base_outcome` / `hermes_base_detail`；领域层接受缺字段与 JSON null，只拒绝类型错误、未知枚举值和超过 500 个码点的 detail。`UpdatePackage` 的列表/详情接口一并透出，管理台在版本列表和详情抽屉显示徽标。旧的 `version/create` 链路继续透传顶层字段；standalone `update-packages` 链路直接写入这两列。全体应用的拒绝率：
+
+```sql
+SELECT hermes_base_outcome, COUNT(*) FROM update_packages
+ WHERE hermes_base_outcome IS NOT NULL GROUP BY hermes_base_outcome;
+```
+
+旧版服务端忽略未知字段，CLI 先于服务端发布也安全。
+
+### 3.2 指令级缓冲区偏移 —— 已完成（v87–96、v98）
+
+见 §2"字面量按指令比较"。v98 最初按 v96 的 tag 语义解码，模糊测试（300 轮，RN 0.87 的 hermes-compiler）报出 259 次对象值不一致——全部源于 tag 类型 6 在 v98 表示 `undefined` 而非 1 字节字符串 id；修正后 v98 两个种子共 800 轮：0 次差异、75 处植入差异全部抓到。
+
+### 3.3 差分模糊测试 —— 已完成
+
+`scripts/fuzz-hermes-base.ts`（`HERMESC=<path> bun run fuzz:hermes-base --rounds N --seed S [--out DIR] [--verbose]`）：按种子生成随机 JS（大量标识符/字符串字面量、嵌套数组对象字面量、整数与字符串 switch、闭包、try/catch、正则、模板字符串、Babel 形态的类、解构、寄存器压力大的函数），base 取池中另一份或当前程序的变异副本，真实 hermesc 编三次（base、plain、delta），跑 `compareHermesBytecode`；`different` 的 detail 去数字/寄存器/函数名后去重输出，失败轮次的源码与 HBC 留在 `--out`。每 10 轮另植入一处字面量改动并断言校验能抓到（防止归一化折叠过头）。首次运行（2026-09-10，20 轮）找到的三处误杀就是 §2 的缓冲区重叠问题，已由 3.2 修复；修复后种子 2（300 轮）、种子 3（200 轮）、种子 7（40 轮）共 519 轮有效编译：0 次差异、0 次 dump 失败、53 处植入差异全部抓到（生成器早期版本另有 21 轮 hermesc 拒绝编译，属生成器问题，已修）。生成器产出 hermesc 不接受的程序时按"生成器 bug"计数并保留现场，不算校验结果。植入的字面量若落在被优化掉的代码里（`!'x'`、不可达的 switch 分支——Static Hermes 的常量折叠比经典 hermesc 激进得多），产物里根本没有这个字符串，两侧确实等价；这类轮次按产物字符串存储里是否出现新字符串判定（不经被测校验），记为"optimized away"，不计入检出统计。
+
+### 3.4 函数身份与无损操作数 —— 已补充
+
+raw 核对保留函数引用索引，与出现顺序对齐的函数体及二进制函数头联合比较。定向测试会只修改 HBC 中的引用，将两个同名闭包之一指向另一个：pretty 文本完全相同，但 raw 核对必须拒绝。另有 `-0`/`+0`、长字符串、UTF-16、长 BigInt 和 strict-mode flags 的回归用例。
+
+仍未实现任意函数重排下的身份映射；遇到合法的函数重排会保守回退 plain，不通过删除函数索引来规避。
+
+### 3.5 其它
+
+- **`hermesBasePlainCompileFailed` 的语义** —— 已统一（`914514f`）：用于校验的普通编译失败时放弃 base、重编 plain 作为产物，上报 `dump-failed` + `plain compile failed: …`；真正的编译器故障会在重编时以构建错误暴露。
+- **资源开销**：base/plain 编译并发完成后，执行 pretty 和 raw 两遍 dump；每遍两个进程，raw 不增加编译。二进制元数据读取目前持有两份 HBC、完整字符串映射及字面量缓冲区，反汇编仅保留当前函数；这是完整数据核对的额外内存和时间开销。不要以删除验证数据来优化内存，可后续改为按段读取或降低并行度。
+- **进程期限**：版本探测默认 30 秒（`PAKTA_HERMES_PROBE_TIMEOUT_MS`），完整校验两遍合计默认 120 秒（`PAKTA_HERMES_VERIFY_TIMEOUT_MS`），单个编译/源码映射子进程默认 300 秒（`PAKTA_HERMES_COMPILE_TIMEOUT_MS`）。环境变量单位均为毫秒，必须是 1–2147483647 的整数，否则用默认值。超时终止子进程，优化失败回退 plain；真正的 plain 编译或最终 sourcemap 失败仍使构建失败。校验函数还接受 `AbortSignal`；base 下载任务的取消传播尚未统一。
+- **源码映射竞态**：推测执行的 base sourcemap 合成任务启动时立即观察拒绝，之后再根据最终采用哪份字节码决定抛出错误还是为 plain 重做合成。
+- **回归入口**：`tests/hermes-base-safety.test.ts`、`tests/hermes-blockers.test.ts`、`tests/hermes-raw.test.ts` 与 `tests/hermes-timeout.test.ts` 覆盖 fail-closed 和进程收敛；`tests/hermes-metro.test.ts` 只在显式提供固定 fixture 目录时运行，不会联网下载。
+- **`hbcdump`/`hbc-diff`**：Hermes 仓库自带的工具，RN 的 hermesc 不随附；如果将来 hermes-compiler 包里带上，可替代文本 dump 解析。
+
+## 4. 明确接受的剩余风险
+
+即使全部待办完成，这仍是"没找到差异"而非"证明等价"。覆盖不到：identifier hash 存储错误（hash 由内容确定性生成，概率极低）、调试信息层错误（不影响执行）、两侧被同一个 hermesc bug 同时影响。这些是选择 `--verifyHermesBase`（默认）与 `--hermesBase none` 之间时应知道的边界。
+
+## 5. 排查一次拒绝
+
+1. 看日志里的 detail：函数 + 行号 + 两侧内容，或缓冲区条目，或 dump 失败原因。
+2. 两行只差宽度后缀/数字 id/偏移 → 误杀，补归一化规则和用例；先用 `bun run fuzz:hermes-base` 复现一遍，看是否还有同类。
+3. 指令数量/顺序/opcode 不同，或某条 `New*WithBuffer` 解析后的字面量不同（detail 形如 `NewArrayWithBuffer r2 size=44 n=44 entry 7: [String "a"] vs [String "b"]`）→ 真差异，回退正确，向 Hermes 上游报告。detail 带 `undecodable` 说明无法解码，归为 `dump-failed`；可能是损坏的 HBC，也可能是验证器尚不支持的布局，不能直接断言上游错误。
+   若日志/元数据里 `literals` 为 `buffer`（文件结构不识别），缓冲区是按整段文本比的，`Array Buffer entry N` 形式的差异可能是 §2 的重叠误杀，需人工用二进制解码核对。
+4. `dump-failed` → 校验无法完成；检查解析原因、编译器版本、超时与 stderr。它不是等价证据，也不必然是与字节码无关的进程错误。
+5. 需要完整现场：`PAKTA_HERMES_BASE_DEBUG=1 pakta bundle …`，两份反汇编在中间目录旁 `hermes-base-dump-{base,plain}.txt`。
