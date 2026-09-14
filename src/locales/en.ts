@@ -1,13 +1,13 @@
 /**
  * [INPUT]: 依赖 CLI i18n 键与英文产品术语
- * [OUTPUT]: 对外提供 pakta 默认英文文案，含渠道自动创建、原生版本组重复与 JS 冲突提示
+ * [OUTPUT]: 对外提供 Pakta 英文文案，作为所有非中文 locale 和缺失翻译的兜底
  * [POS]: locales 英文资源事实源，与 zh.ts 保持键集合对称，不参与上传裁决
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 export default {
   addedToGitignore: 'Added {{line}} to .gitignore',
   androidCrunchPngsWarning:
-    'The crunchPngs option of android seems not disabled (Please ignore this warning if already disabled), which may cause abnormal consumption of mobile network traffic. Please refer to https://github.com/pakta-team/rn-update#installation-and-native-setup \n',
+    'The crunchPngs option of android seems not disabled (Please ignore this warning if already disabled), which may cause abnormal consumption of mobile network traffic. Please refer to https://github.com/pakta-team/rn-update/blob/main/rn-update/README.md#installation-and-native-setup \n',
   aabOpenApksFailed: 'Failed to open generated .apks file',
   aabReadUniversalApkFailed: 'Failed to read universal.apk',
   aabUniversalApkNotFound: 'universal.apk not found in generated .apks',
@@ -266,5 +266,59 @@ This can reduce the risk of inconsistent dependencies and supply chain attacks.
   unsafeIntermediateDir:
     'Refusing to empty {{- dir}} as the intermediate directory: it resolves to a protected or symbolic-link location. Point --intermediaDir at a dedicated build directory.',
   appKeyMissing: 'App {{appId}} did not return a valid app key.',
+  accessTokenMissing: 'Login response did not include an access token.',
+  bundleHashRequired:
+    'Standalone native package registration requires bundleHash.',
+  channelAssertionFailed:
+    'Channel assertion failed: the package contains {{channel}}, but --channel is {{requestedChannel}}. --channel cannot override the package channel.',
+  channelCodeRequired: 'Channel code cannot be empty.',
+  channelHasNoNativePackages:
+    'Channel {{channel}} has no native packages available to bind.',
+  channelNotRegistered: 'Channel {{channel}} is not registered for this app.',
+  channelCreated: 'Channel {{channel}} created successfully.',
+  channelUpdated: 'Channel {{channel}} updated successfully.',
+  channelManagementStandaloneOnly:
+    'Channel management requires the standalone service. Set RNU_SERVICE_URL.',
+  channelIdRequired: '{{command}} requires channelId.',
+  deploymentIdsRequired: 'deploymentIds cannot be empty.',
+  deploymentInvalid:
+    'Deployment {{deploymentId}} does not belong to app {{appId}} or is missing target identity.',
+  deploymentPublishFailed:
+    'Publish failed for deployment IDs: {{deploymentIds}}',
+  deploymentStrategyMissing:
+    'The server did not return a deployment strategy for {{channelId}}/{{packageVersion}}.',
+  deploymentTargetsSinglePackage:
+    'deploymentIds must belong to the same hot update package.',
+  duplicateDeploymentTarget:
+    'targets.json specifies the deployment target more than once: {{channelId}}/{{packageVersion}}.',
+  nativePackageQuotaMissing:
+    'The server did not return a valid native package quota. Upgrade the server and try again.',
+  nativePackageTargetMissingInfo:
+    'The selected native package is missing channel or version information, so a deployment target cannot be created.',
+  specifiedNativePackageTargetMissingInfo:
+    'The specified native package is missing channel or version information, so a deployment target cannot be created.',
+  objectStorageUploadFailed:
+    'Object storage upload failed: HTTP {{status}}',
+  objectStoragePartETagMissing:
+    'Object storage did not return an ETag for part {{partNumber}}.',
+  pdiffServiceRequired:
+    'Per-build pdiff registration requires the standalone service. Set RNU_SERVICE_URL.',
+  pdiffArgumentsRequired:
+    'pdiff registration requires --deploymentId, --nativeVersionId, and --diffFromHash.',
+  pdiffHashInvalid: '--diffFromHash must be a 64-character lowercase SHA-256 digest.',
+  pdiffFileNotFound: 'pdiff file not found: {{filePath}}',
+  pdiffFileExtensionInvalid:
+    'pdiff files must end with .apk.patch, .ipa.patch, .hap.patch, or .app.patch.',
+  standaloneUploadAppIdRequired: 'Standalone service uploads require appId.',
+  standalonePackageVersionRequired:
+    'Standalone publishing requires packageVersion.',
+  targetsFileReadFailed:
+    'Unable to read the targets file: {{error}}',
+  targetsFileInvalid:
+    'targets.json must be an array or an object containing a targets array.',
+  targetsRequired: 'Specify at least one channel/version target.',
+  staleLocalBuild:
+    'The local CLI build is out of date. Run npm run build in rn-update-cli and try again.',
+  unspecified: '(unspecified)',
   errorStackHint: '(set RNU_DEBUG=1 to print the stack trace)',
 };

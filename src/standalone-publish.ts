@@ -1,5 +1,5 @@
 /**
- * [INPUT]: 依赖独立 Go API、对象上传、渠道/原生包查询与版本参数契约
+ * [INPUT]: 依赖独立 Go API、对象上传、渠道/原生包查询、版本参数契约与本地化文案
  * [OUTPUT]: 对外提供 UpdatePackage/Deployment 上传（含受热更配额校验的 source map 归档）、默认 100% 全量的交互或显式目标解析、准确 ID 重试及逐构建 pdiff 登记
  * [POS]: CLI 独立服务投放编排层；一个包可在多个渠道×原生版本目标上原子保存并发布
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -27,10 +27,10 @@ import {
   sha256Hex,
   truncateHermesBaseDetail,
 } from './utils/hermes-base';
-import { packSourceMap } from './utils/slim-sourcemap';
 import { isStandaloneService } from './utils/http-helper';
 import { t } from './utils/i18n';
 import { getBooleanOption } from './utils/options';
+import { packSourceMap } from './utils/slim-sourcemap';
 import type { VersionCommandOptions } from './versions';
 
 type StandalonePublishTarget = {
@@ -92,7 +92,7 @@ async function chooseStandaloneTarget(
         item.code.trim().toLowerCase() === requestedChannel,
     );
     if (!channel) {
-      throw new Error(`渠道 ${requestedChannel} 尚未在应用中登记。`);
+      throw new Error(t('channelNotRegistered', { channel: requestedChannel }));
     }
     packages = allPackages.filter((pkg) => pkg.channelId === channel.id);
   }
@@ -100,7 +100,7 @@ async function chooseStandaloneTarget(
   if (packages.length === 0) {
     throw new Error(
       requestedChannel
-        ? `渠道 ${requestedChannel} 下没有可绑定的原生包。`
+        ? t('channelHasNoNativePackages', { channel: requestedChannel })
         : t('noPackagesFound', { appId }),
     );
   }
@@ -116,7 +116,7 @@ async function chooseStandaloneTarget(
   const channelId = String(selected.channelId || '').trim();
   const packageVersion = nativePackageVersion(selected);
   if (!channelId || !packageVersion) {
-    throw new Error('所选原生包缺少渠道或版本信息，无法创建投放目标。');
+    throw new Error(t('nativePackageTargetMissingInfo'));
   }
 
   return {
@@ -201,7 +201,9 @@ async function resolveStandaloneTargets(
       parsed = JSON.parse(fs.readFileSync(String(options.targets), 'utf8'));
     } catch (error) {
       throw new Error(
-        `无法读取 targets 文件：${error instanceof Error ? error.message : String(error)}`,
+        t('targetsFileReadFailed', {
+          error: error instanceof Error ? error.message : String(error),
+        }),
       );
     }
     const candidate = Array.isArray(parsed)
@@ -212,7 +214,7 @@ async function resolveStandaloneTargets(
         ? (parsed as any).targets
         : null;
     if (!candidate) {
-      throw new Error('targets.json 必须是数组，或包含 targets 数组。');
+      throw new Error(t('targetsFileInvalid'));
     }
     rawTargets = candidate as typeof rawTargets;
   } else if (options.packageId) {
@@ -225,7 +227,7 @@ async function resolveStandaloneTargets(
     }
     const packageVersion = nativePackageVersion(selected);
     if (!selected.channelId || !packageVersion) {
-      throw new Error('指定的原生包缺少渠道或版本信息，无法创建投放目标。');
+      throw new Error(t('specifiedNativePackageTargetMissingInfo'));
     }
     rawTargets = [
       {
@@ -242,7 +244,7 @@ async function resolveStandaloneTargets(
     ];
   }
   if (rawTargets.length === 0) {
-    throw new Error('至少指定一个渠道版本组。');
+    throw new Error(t('targetsRequired'));
   }
   return Promise.all(rawTargets.map(async (target) => {
     const rawChannel = target.channel || options.channel || 'default';
@@ -258,14 +260,16 @@ async function resolveStandaloneTargets(
     }
     if (!channel) {
       throw new Error(
-        `渠道 ${target.channelId || target.channel || options.channel || 'default'} 尚未在应用中登记。`,
+        t('channelNotRegistered', {
+          channel: target.channelId || target.channel || options.channel || 'default',
+        }),
       );
     }
     const packageVersion = String(
       target.packageVersion || options.packageVersion || '',
     ).trim();
     if (!packageVersion) {
-      throw new Error('独立服务发布必须指定 packageVersion。');
+      throw new Error(t('standalonePackageVersionRequired'));
     }
     const targetRollout = resolveTargetRollout(
       target.rollout === undefined ? options.rollout : target.rollout,
@@ -407,7 +411,12 @@ export async function publishStandalone(
   for (const target of targets) {
     const targetKey = `${target.channelId}\x00${target.packageVersion}`;
     if (duplicateTargets.has(targetKey)) {
-      throw new Error(`targets.json 重复指定目标：${target.channelId}/${target.packageVersion}。`);
+      throw new Error(
+        t('duplicateDeploymentTarget', {
+          channelId: target.channelId,
+          packageVersion: target.packageVersion,
+        }),
+      );
     }
     duplicateTargets.add(targetKey);
   }
@@ -449,7 +458,12 @@ export async function publishStandalone(
     const targetKey = `${target.channelId}\x00${target.packageVersion}`;
     const deployment = existingByTarget.get(targetKey) || savedByTarget.get(targetKey);
     if (!deployment) {
-      throw new Error(`服务端未返回目标策略：${target.channelId}/${target.packageVersion}。`);
+      throw new Error(
+        t('deploymentStrategyMissing', {
+          channelId: target.channelId,
+          packageVersion: target.packageVersion,
+        }),
+      );
     }
     return { ...deployment, ...target, packageId: packageValue.id };
   });
@@ -461,7 +475,9 @@ export async function publishStandalone(
     });
   } catch (error) {
     console.error(
-      `发布失败，投放 ID：${created.map((deployment) => deployment.id).join(', ')}`,
+      t('deploymentPublishFailed', {
+        deploymentIds: created.map((deployment) => deployment.id).join(', '),
+      }),
     );
     throw error;
   }
@@ -490,7 +506,7 @@ export async function retryStandalonePublish(
     .map((value) => value.trim())
     .filter(Boolean);
   if (deploymentIds.length === 0) {
-    throw new Error('deploymentIds 不能为空。');
+    throw new Error(t('deploymentIdsRequired'));
   }
   const deployments = await Promise.all(
     deploymentIds.map(async (deploymentId) => {
@@ -508,7 +524,7 @@ export async function retryStandalonePublish(
         revision: number;
       }>(response);
       if (!deployment || deployment.applicationId !== appId || !deployment.packageId || !deployment.channelId || !deployment.packageVersion) {
-        throw new Error(`投放 ${deploymentId} 不属于应用 ${appId} 或缺少目标身份。`);
+        throw new Error(t('deploymentInvalid', { deploymentId, appId }));
       }
       return deployment;
     }),
@@ -516,7 +532,7 @@ export async function retryStandalonePublish(
   const commands = deployments.map(({ id, packageId, channelId, packageVersion, rollout, forceBoot, revision }) => ({ id, packageId, channelId, packageVersion, rollout, forceBoot, revision, action: 'publish' }));
   const packageIds = [...new Set(deployments.map((deployment) => deployment.packageId))];
   if (packageIds.length !== 1) {
-    throw new Error('deploymentIds 必须属于同一个热更新包。');
+    throw new Error(t('deploymentTargetsSinglePackage'));
   }
   const idempotencyKey = standaloneOperationKey(appId, packageIds[0], deploymentIds);
   if (dryRun) {
@@ -544,23 +560,23 @@ export async function registerStandalonePdiff(
   options: VersionCommandOptions,
 ): Promise<string> {
   if (!isStandaloneService()) {
-    throw new Error('逐构建 pdiff 登记需要独立服务（请设置 RNU_SERVICE_URL）。');
+    throw new Error(t('pdiffServiceRequired'));
   }
   const deploymentId = String(options.deploymentId || options.releaseId || '').trim();
   const nativeVersionId = String(options.nativeVersionId || '').trim();
   const diffFromHash = String(options.diffFromHash || '').trim().toLowerCase();
   if (!deploymentId || !nativeVersionId || !diffFromHash) {
-    throw new Error('pdiff 登记需要 --deploymentId、--nativeVersionId 和 --diffFromHash。');
+    throw new Error(t('pdiffArgumentsRequired'));
   }
   if (!/^[0-9a-f]{64}$/.test(diffFromHash)) {
-    throw new Error('--diffFromHash 必须是 64 位小写 SHA-256 摘要。');
+    throw new Error(t('pdiffHashInvalid'));
   }
   if (!filePath || !fs.existsSync(filePath)) {
-    throw new Error(`pdiff 文件不存在：${filePath || '(未指定)'}`);
+    throw new Error(t('pdiffFileNotFound', { filePath: filePath || t('unspecified') }));
   }
   const patchSuffixes = ['.apk.patch', '.ipa.patch', '.hap.patch', '.app.patch'];
   if (!patchSuffixes.some((suffix) => filePath.toLowerCase().endsWith(suffix))) {
-    throw new Error('pdiff 文件必须以 .apk.patch、.ipa.patch、.hap.patch 或 .app.patch 结尾。');
+    throw new Error(t('pdiffFileExtensionInvalid'));
   }
   const appId = await resolveAppId(options);
   if (options.dryRun) {

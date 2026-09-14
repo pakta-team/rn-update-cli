@@ -190,7 +190,7 @@ $env:RNU_SERVICE_URL = 'https://YOUR_HOST'
 | `RNU_SERVICE_URL` | 独立服务地址 |
 | `PAKTA_API_TOKEN` | CI 个人访问令牌 |
 | `NO_INTERACTIVE=true` | 关闭交互 |
-| `RNU_LANG` | `zh`（默认）或 `en` |
+| `RNU_LANG` | 可选语言覆盖：`zh`/`zh-CN` 使用中文，其他值使用英文。未设置时依次读取 `LC_ALL`、`LC_MESSAGES`、`LANG` 和系统 locale。 |
 | `RNU_DEBUG=1` | 输出错误堆栈 |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | 代理，支持小写形式 |
 | `PAKTA_CACHE_DIR` | Hermes base 缓存目录 |

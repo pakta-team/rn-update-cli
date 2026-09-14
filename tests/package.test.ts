@@ -1,11 +1,12 @@
 /**
- * [INPUT]: 依赖 packageCommands、原生包解析/ZIP 工具与可替换 CLI API
+ * [INPUT]: 依赖 packageCommands、原生包解析/ZIP 工具、可替换 CLI API 与英文 locale 固定器
  * [OUTPUT]: 验证 buildTime、包体选择/删除、精简上传、standalone 幂等短路与同版本换 JS 拒绝契约
  * [POS]: CLI package 命令回归边界，锁定上传前版本组裁决到 multipart/NativeVersion 的完整数据流
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import fs from 'fs';
+import i18next from 'i18next';
 import os from 'os';
 import path from 'path';
 import { ZipFile as YazlZipFile } from 'yazl';
@@ -219,7 +220,8 @@ describe('packageCommands native upload', () => {
   let packagesSpy: ReturnType<typeof spyOn>;
   let originalServiceURL: string | undefined;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18next.changeLanguage('en');
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rnu-package-upload-'));
     originalServiceURL = process.env.RNU_SERVICE_URL;
     consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
@@ -447,7 +449,7 @@ describe('packageCommands native upload', () => {
     expect(uploadSpy).not.toHaveBeenCalled();
     expect(postSpy).not.toHaveBeenCalled();
     expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining('无需重复上传'),
+      expect.stringContaining('skipping duplicate upload'),
     );
   });
 
@@ -482,7 +484,7 @@ describe('packageCommands native upload', () => {
 
     await expect(
       packageCommands.uploadApk({ args: [source], options: { appId } }),
-    ).rejects.toThrow('请提升原生版本号');
+    ).rejects.toThrow('Increment the native version');
 
     expect(uploadSpy).not.toHaveBeenCalled();
     expect(postSpy).not.toHaveBeenCalled();

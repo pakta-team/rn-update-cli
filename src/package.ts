@@ -1,5 +1,5 @@
 /**
- * [INPUT]: 依赖原生包解析器、对象上传 API、应用选择与 channel 自动创建/断言
+ * [INPUT]: 依赖原生包解析器、对象上传 API、应用选择、channel 自动创建/断言与本地化文案
  * [OUTPUT]: 对外提供三端原生包登记/列表/删除/解析命令，上传前执行版本组 JS 一致性与精确身份幂等检查
  * [POS]: CLI 原生构建边界，在上传字节前阻断同版本换 JS，并把合法精简制品、Range 与 buildTime 绑定到 NativeVersion
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -31,10 +31,10 @@ import {
   question,
 } from './utils';
 import { pricingPageUrl, updateJson } from './utils/constants';
-import { isStandaloneService } from './utils/http-helper';
 import { getDepVersions } from './utils/dep-versions';
 import { getCommitInfo } from './utils/git';
 import { bundleEntryMatcher, cachePut } from './utils/hermes-base';
+import { isStandaloneService } from './utils/http-helper';
 import { t } from './utils/i18n';
 import { getStringListOption } from './utils/options';
 import { bundleLocationFields, locateZipEntry } from './utils/zip-range';
@@ -118,7 +118,7 @@ async function assertNativePackageSize(filePath: string, appId: string) {
   const entitlement = await getMembershipEntitlement(appId);
   const maxBytes = Number(entitlement.nativePackageMaxBytes);
   if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
-    throw new Error('服务端未返回有效的原生包大小额度，请升级服务端后重试。');
+    throw new Error(t('nativePackageQuotaMissing'));
   }
   if (fileSize > maxBytes) {
     throw new Error(
@@ -204,7 +204,10 @@ async function uploadNativePackage(
 
   if (options.channel !== undefined && options.channel !== channel) {
     throw new Error(
-      `渠道断言失败：安装包内为 ${channel}，而 --channel 为 ${options.channel}。--channel 不会覆盖包内渠道。`,
+      t('channelAssertionFailed', {
+        channel,
+        requestedChannel: options.channel,
+      }),
     );
   }
 
@@ -234,7 +237,7 @@ async function uploadNativePackage(
   let standaloneChannelId: string | undefined;
   if (isStandaloneService()) {
     if (!bundleHash) {
-      throw new Error('独立服务登记原生包体必须包含 bundleHash。');
+      throw new Error(t('bundleHashRequired'));
     }
     const resolvedChannel = await getOrCreateChannel(appId, channel);
     if (resolvedChannel.created) {

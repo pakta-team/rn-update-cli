@@ -1,13 +1,13 @@
 /**
  * [INPUT]: 依赖 CLI i18n 键与中文产品术语
- * [OUTPUT]: 对外提供 pakta 默认中文文案，含渠道自动创建、原生版本组重复与 JS 冲突提示
+ * [OUTPUT]: 对外提供 Pakta 中文文案，仅由中文 locale 选择
  * [POS]: locales 中文资源事实源，只表达交互语义，不参与上传裁决
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 export default {
   addedToGitignore: '已将 {{line}} 添加到 .gitignore',
   androidCrunchPngsWarning:
-    'android 的 crunchPngs 选项似乎尚未禁用（如已禁用则请忽略此提示），这可能导致热更包体积异常增大，具体请参考 https://github.com/pakta-team/rn-update/blob/main/README-CN.md#安装与原生接入 \n',
+    'android 的 crunchPngs 选项似乎尚未禁用（如已禁用则请忽略此提示），这可能导致热更包体积异常增大，具体请参考 https://github.com/pakta-team/rn-update/blob/main/rn-update/README-CN.md#安装与原生接入 \n',
   aabOpenApksFailed: '无法打开生成的 .apks 文件',
   aabReadUniversalApkFailed: '无法读取 universal.apk',
   aabUniversalApkNotFound: '在生成的 .apks 中未找到 universal.apk',
@@ -245,5 +245,51 @@ export default {
   unsafeIntermediateDir:
     '拒绝清空中间目录 {{- dir}}：该路径指向受保护目录或包含符号链接。请用 --intermediaDir 指定一个专用的构建目录。',
   appKeyMissing: '应用 {{appId}} 未返回有效的 appKey。',
+  accessTokenMissing: '登录响应中没有 access token。',
+  bundleHashRequired: '独立服务登记原生包体必须包含 bundleHash。',
+  channelAssertionFailed:
+    '渠道断言失败：安装包内为 {{channel}}，而 --channel 为 {{requestedChannel}}。--channel 不会覆盖包内渠道。',
+  channelCodeRequired: '渠道 code 不能为空。',
+  channelHasNoNativePackages: '渠道 {{channel}} 下没有可绑定的原生包。',
+  channelNotRegistered: '渠道 {{channel}} 尚未在应用中登记。',
+  channelCreated: '已创建渠道 {{channel}}。',
+  channelUpdated: '已更新渠道 {{channel}}。',
+  channelManagementStandaloneOnly:
+    '渠道管理需要独立服务，请设置 RNU_SERVICE_URL。',
+  channelIdRequired: '{{command}} 需要 channelId。',
+  deploymentIdsRequired: 'deploymentIds 不能为空。',
+  deploymentInvalid: '投放 {{deploymentId}} 不属于应用 {{appId}} 或缺少目标身份。',
+  deploymentPublishFailed:
+    '发布失败，投放 ID：{{deploymentIds}}',
+  deploymentStrategyMissing:
+    '服务端未返回目标策略：{{channelId}}/{{packageVersion}}。',
+  deploymentTargetsSinglePackage: 'deploymentIds 必须属于同一个热更新包。',
+  duplicateDeploymentTarget:
+    'targets.json 重复指定目标：{{channelId}}/{{packageVersion}}。',
+  nativePackageQuotaMissing:
+    '服务端未返回有效的原生包大小额度，请升级服务端后重试。',
+  nativePackageTargetMissingInfo:
+    '所选原生包缺少渠道或版本信息，无法创建投放目标。',
+  specifiedNativePackageTargetMissingInfo:
+    '指定的原生包缺少渠道或版本信息，无法创建投放目标。',
+  objectStorageUploadFailed: '对象存储上传失败：HTTP {{status}}',
+  objectStoragePartETagMissing:
+    '对象存储未返回第 {{partNumber}} 个分片的 ETag。',
+  pdiffServiceRequired:
+    '逐构建 pdiff 登记需要独立服务，请设置 RNU_SERVICE_URL。',
+  pdiffArgumentsRequired:
+    'pdiff 登记需要 --deploymentId、--nativeVersionId 和 --diffFromHash。',
+  pdiffHashInvalid: '--diffFromHash 必须是 64 位小写 SHA-256 摘要。',
+  pdiffFileNotFound: 'pdiff 文件不存在：{{filePath}}',
+  pdiffFileExtensionInvalid:
+    'pdiff 文件必须以 .apk.patch、.ipa.patch、.hap.patch 或 .app.patch 结尾。',
+  standaloneUploadAppIdRequired: '独立服务上传必须提供 appId。',
+  standalonePackageVersionRequired: '独立服务发布必须指定 packageVersion。',
+  targetsFileReadFailed: '无法读取 targets 文件：{{error}}',
+  targetsFileInvalid: 'targets.json 必须是数组，或包含 targets 数组。',
+  targetsRequired: '至少指定一个渠道版本组。',
+  staleLocalBuild:
+    'CLI 编译产物已过期。请在 rn-update-cli 目录执行 npm run build 后重试。',
+  unspecified: '（未指定）',
   errorStackHint: '（设置 RNU_DEBUG=1 可打印完整堆栈）',
 };

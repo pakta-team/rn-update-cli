@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 依赖编译后的 CLI 入口、隔离 HTTP 伪服务、运行时环境变量与临时项目文件
+ * [OUTPUT]: 验证 CLI 进程级语言输出、认证失败提示、上传和发布链路
+ * [POS]: tests 的进程边界验收，连接命令入口与服务端协议，不承载生产业务逻辑
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import {
   afterAll,
   afterEach,
@@ -137,7 +143,8 @@ function runCli({
     // Node never does that, so switch the runtime feature off.
     const child = spawn(process.execPath, ['--no-install', ...args], {
       cwd,
-      env,
+      // 固定进程级断言并显式覆盖国际化默认行为；中文覆盖位于 i18n.test。
+      env: { ...env, RNU_LANG: 'en' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -270,7 +277,7 @@ describe('CLI e2e', () => {
     });
 
     expect(result.status).toBe(1);
-    expect(result.stdout).toContain('尚未登录');
+    expect(result.stdout).toContain('Not logged in.');
     expect(result.stderr).toBe('');
     expect(requests).toContain('GET /api/app/list');
   });

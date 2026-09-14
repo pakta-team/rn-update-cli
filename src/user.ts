@@ -1,10 +1,17 @@
 /**
- * [INPUT]: 依赖 CLI API 会话存储、凭据隔离和登录提示
+ * [INPUT]: 依赖 CLI API 会话存储、凭据隔离、登录提示与本地化文案
  * [OUTPUT]: 对外提供 login/logout/me 用户命令
  * [POS]: CLI 身份层，所有服务地址统一走邮箱账号管理 API，并复用现有会话与令牌传输协议
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
-import { closeSession, get, post, replaceSession, saveSession, servicePath } from './api';
+import {
+  closeSession,
+  get,
+  post,
+  replaceSession,
+  saveSession,
+  servicePath,
+} from './api';
 import type { CommandContext } from './types';
 import { question } from './utils';
 import { addGitIgnore } from './utils/add-gitignore';
@@ -20,18 +27,29 @@ export const userCommands = {
       // sending empty credentials to the server
       throw new Error(t('loginCredentialsRequired', { scriptName }));
     }
-    const response = await post(servicePath('/auth/login'), { email, password: pwd });
+    const response = await post(servicePath('/auth/login'), {
+      email,
+      password: pwd,
+    });
     const data = response?.data ?? response;
     const token = data?.accessToken ?? data?.token;
     if (typeof token !== 'string' || token.length === 0) {
-      throw new Error('登录响应缺少 accessToken');
+      throw new Error(t('accessTokenMissing'));
     }
     replaceSession({ token });
     await saveSession();
     // make sure the token file is ignored before the user's next commit,
     // not only when they first run `bundle`
     addGitIgnore();
-    console.log(t('welcomeMessage', { name: data?.user?.displayName || data?.user?.email || data?.info?.name || email }));
+    console.log(
+      t('welcomeMessage', {
+        name:
+          data?.user?.displayName ||
+          data?.user?.email ||
+          data?.info?.name ||
+          email,
+      }),
+    );
   },
   logout: async (_context: CommandContext) => {
     await post(servicePath('/auth/logout')).catch(() => undefined);

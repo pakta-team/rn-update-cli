@@ -188,7 +188,7 @@ Credentials are scoped by service URL.
 | `RNU_SERVICE_URL` | Standalone service URL |
 | `PAKTA_API_TOKEN` | Personal access token for CI |
 | `NO_INTERACTIVE=true` | Disables prompts |
-| `RNU_LANG` | `zh` (default) or `en` |
+| `RNU_LANG` | Optional language override: `zh`/`zh-CN` selects Chinese; any other value selects English. If unset, the CLI uses `LC_ALL`, `LC_MESSAGES`, `LANG`, then the system locale. |
 | `RNU_DEBUG=1` | Prints error stacks |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | Proxies; lowercase names supported |
 | `PAKTA_CACHE_DIR` | Hermes base cache directory |

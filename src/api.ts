@@ -1,5 +1,5 @@
 /**
- * [INPUT]: 依赖运行时 HTTP、独立服务 multipart 协议与 CLI 会话凭据
+ * [INPUT]: 依赖运行时 HTTP、独立服务 multipart 协议、CLI 会话凭据与本地化文案
  * [OUTPUT]: 对外提供认证请求、当前应用会员权益读取、按字节显示进度的对象上传、应用渠道（含创建）、原生包、不可变热更新包/投放策略与 Hermes base 查询 API
  * [POS]: CLI 传输边界，统一旧服务兼容路径与独立 Go 服务管理路径，确保 standalone 包体和 Deployment 请求不落回旧 /app 路由
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -11,8 +11,8 @@ import type {
   Response as NodeFetchResponse,
 } from 'node-fetch';
 import path from 'path';
-import { Readable } from 'stream';
 import type ProgressBar from 'progress';
+import { Readable } from 'stream';
 import packageJson from '../package.json';
 import type { Package, Session } from './types';
 import {
@@ -20,7 +20,7 @@ import {
   pricingPageUrl,
 } from './utils/constants';
 import type { HermesBaseServerRecord } from './utils/hermes-base';
-import { getBaseUrl } from './utils/http-helper';
+import { getBaseUrl, isStandaloneService } from './utils/http-helper';
 import { t } from './utils/i18n';
 import {
   measureTcpLatency,
@@ -30,7 +30,6 @@ import {
   resolveProxy,
   runtimeFetch,
 } from './utils/runtime';
-import { isStandaloneService } from './utils/http-helper';
 
 let session: Session | undefined;
 let savedSession: Session | undefined;
@@ -549,7 +548,7 @@ export async function uploadFile(
  */
 async function uploadMultipartFile(fn: string, appId?: string | number) {
   if (!appId) {
-    throw new Error('独立服务上传必须提供 appId。');
+    throw new Error(t('standaloneUploadAppIdRequired'));
   }
   const fileName = path.basename(fn);
   const contentType = fileName.endsWith('.ppk')
@@ -617,11 +616,13 @@ async function uploadMultipartFile(fn: string, appId?: string | number) {
         throw error;
       }
       if (!response.ok) {
-        throw new Error(`对象存储上传失败：HTTP ${response.status}`);
+        throw new Error(t('objectStorageUploadFailed', { status: response.status }));
       }
       const eTag = response.headers.get('etag');
       if (!eTag) {
-        throw new Error(`对象存储未返回第 ${part.partNumber} 个分片的 ETag。`);
+        throw new Error(
+          t('objectStoragePartETagMissing', { partNumber: part.partNumber }),
+        );
       }
       completed.push({ partNumber: part.partNumber, eTag, size: length });
     }
@@ -772,7 +773,7 @@ export async function createChannel(
   name = code,
 ): Promise<ServiceChannel> {
   if (!isStandaloneService()) {
-    throw new Error('渠道管理需要独立服务（请设置 RNU_SERVICE_URL）。');
+    throw new Error(t('channelManagementStandaloneOnly'));
   }
   const response = await post(
     servicePath(`/apps/${encodeURIComponent(appId)}/channels`),

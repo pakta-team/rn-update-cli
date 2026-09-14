@@ -1,5 +1,13 @@
+/**
+ * [INPUT]: 依赖 i18next、CLI 中英文资源与环境/系统 locale 选择规则
+ * [OUTPUT]: 对外提供语言选择、英文兜底、插值和资源键对称性的回归验证
+ * [POS]: tests 的国际化契约入口，防止非中文环境意外继承中文输出
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { describe, expect, test } from 'bun:test';
 import i18next from 'i18next';
+import en from '../src/locales/en';
+import zh from '../src/locales/zh';
 import { resolveLanguage, t } from '../src/utils/i18n';
 
 describe('i18n t()', () => {
@@ -66,19 +74,38 @@ describe('i18n t()', () => {
 });
 
 describe('resolveLanguage', () => {
-  test('uses the Pakta default language', () => {
-    expect(resolveLanguage({})).toBe('zh');
-    expect(resolveLanguage({}, 'en')).toBe('en');
+  test('uses the runtime locale when no environment locale is set', () => {
+    expect(resolveLanguage({}, 'zh-CN')).toBe('zh');
+    expect(resolveLanguage({}, 'en-US')).toBe('en');
   });
 
-  test('RNU_LANG overrides the Pakta default, by language prefix', () => {
+  test('RNU_LANG overrides system locale and recognizes Chinese variants', () => {
     expect(resolveLanguage({ RNU_LANG: 'en' })).toBe('en');
-    expect(resolveLanguage({ RNU_LANG: 'zh_CN.UTF-8' }, 'en')).toBe('zh');
+    expect(resolveLanguage({ RNU_LANG: 'zh_CN.UTF-8' }, 'en-US')).toBe('zh');
     expect(resolveLanguage({ RNU_LANG: 'EN-us' })).toBe('en');
+    expect(resolveLanguage({ RNU_LANG: 'zh-Hant' }, 'en-US')).toBe('zh');
+    expect(resolveLanguage({ RNU_LANG: 'zhfoo' }, 'zh-CN')).toBe('en');
   });
 
-  test('an unsupported RNU_LANG falls back to the Pakta default', () => {
-    expect(resolveLanguage({ RNU_LANG: 'fr' })).toBe('zh');
-    expect(resolveLanguage({ RNU_LANG: '' }, 'en')).toBe('en');
+  test('uses English for every non-Chinese locale', () => {
+    expect(resolveLanguage({ RNU_LANG: 'fr', LANG: 'zh-CN' })).toBe('en');
+    expect(resolveLanguage({ RNU_LANG: 'ja-JP' }, 'zh-CN')).toBe('en');
+    expect(resolveLanguage({ RNU_LANG: 'C' }, 'zh-CN')).toBe('en');
+  });
+
+  test('checks locale variables in order and skips empty values', () => {
+    expect(
+      resolveLanguage({ LC_ALL: 'zh_CN.UTF-8', LANG: 'fr-FR' }, 'en-US'),
+    ).toBe('zh');
+    expect(
+      resolveLanguage({ RNU_LANG: '', LC_ALL: '', LANG: 'fr-FR' }, 'zh-CN'),
+    ).toBe('en');
+    expect(
+      resolveLanguage({ LC_ALL: 'fr-FR', LC_MESSAGES: 'zh-CN' }, 'zh-CN'),
+    ).toBe('en');
+  });
+
+  test('keeps the English and Chinese resource keys symmetric', () => {
+    expect(Object.keys(en).sort()).toEqual(Object.keys(zh).sort());
   });
 });

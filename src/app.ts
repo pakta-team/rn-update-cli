@@ -1,10 +1,11 @@
 /**
- * [INPUT]: 依赖 CLI API、update.json 配置和平台交互提示
+ * [INPUT]: 依赖 CLI API、update.json 配置、平台交互提示与本地化文案
  * [OUTPUT]: 对外提供应用选择、应用 CRUD、独立服务渠道 CRUD 与缺失渠道幂等创建
  * [POS]: CLI 目标解析层，负责把平台/应用/渠道身份收敛为服务端 UUID，并为发布命令补齐渠道
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 import fs from 'fs';
+import type { ServiceChannel } from './api';
 import {
   createChannel,
   doDelete,
@@ -15,7 +16,6 @@ import {
   servicePath,
   unwrapData,
 } from './api';
-import type { ServiceChannel } from './api';
 import type { Platform } from './types';
 import { isNonInteractive, loadTtyTable, question } from './utils';
 import { updateJson } from './utils/constants';
@@ -118,7 +118,7 @@ export async function getOrCreateChannel(
 ): Promise<ResolvedChannel> {
   const normalizedCode = code.trim().toLowerCase();
   if (!normalizedCode) {
-    throw new Error('渠道 code 不能为空。');
+    throw new Error(t('channelCodeRequired'));
   }
   const findChannel = (channels: ServiceChannel[]) =>
     channels.find(
@@ -353,7 +353,7 @@ export function getAppCommands() {
     channels: async ({ options }: { options: AppTargetOptions & { json?: boolean } }) => {
       const appId = await resolveAppId(options);
       if (!isStandaloneService()) {
-        throw new Error('渠道管理需要独立服务（请设置 RNU_SERVICE_URL）。');
+        throw new Error(t('channelManagementStandaloneOnly'));
       }
       const channels = await getChannels(appId);
       if (options.json) {
@@ -369,7 +369,7 @@ export function getAppCommands() {
     createChannel: async ({ options }: { options: AppTargetOptions & { code: string; name: string; nativePackageUrl?: string; paused?: boolean; json?: boolean } }) => {
       const appId = await resolveAppId(options);
       if (!isStandaloneService()) {
-        throw new Error('渠道管理需要独立服务（请设置 RNU_SERVICE_URL）。');
+        throw new Error(t('channelManagementStandaloneOnly'));
       }
       const channel = unwrapData(
         await post(servicePath(`/apps/${encodeURIComponent(appId)}/channels`), {
@@ -379,14 +379,18 @@ export function getAppCommands() {
           paused: Boolean(options.paused),
         }),
       );
-      console.log(options.json ? JSON.stringify(channel, null, 2) : `已创建渠道 ${options.code}`);
+      console.log(
+        options.json
+          ? JSON.stringify(channel, null, 2)
+          : t('channelCreated', { channel: options.code }),
+      );
       return channel;
     },
     updateChannel: async ({ args, options }: { args: string[]; options: AppTargetOptions & { code: string; name: string; nativePackageUrl?: string; paused?: boolean; json?: boolean } }) => {
       const channelId = args[0];
-      if (!channelId) throw new Error('updateChannel 需要 channelId。');
+      if (!channelId) throw new Error(t('channelIdRequired', { command: 'updateChannel' }));
       if (!isStandaloneService()) {
-        throw new Error('渠道管理需要独立服务（请设置 RNU_SERVICE_URL）。');
+        throw new Error(t('channelManagementStandaloneOnly'));
       }
       const channel = unwrapData(
         await put(servicePath(`/channels/${encodeURIComponent(channelId)}`), {
@@ -396,14 +400,18 @@ export function getAppCommands() {
           paused: Boolean(options.paused),
         }),
       );
-      console.log(options.json ? JSON.stringify(channel, null, 2) : `已更新渠道 ${channelId}`);
+      console.log(
+        options.json
+          ? JSON.stringify(channel, null, 2)
+          : t('channelUpdated', { channel: channelId }),
+      );
       return channel;
     },
     deleteChannel: async ({ args }: { args: string[] }) => {
       const channelId = args[0];
-      if (!channelId) throw new Error('deleteChannel 需要 channelId。');
+      if (!channelId) throw new Error(t('channelIdRequired', { command: 'deleteChannel' }));
       if (!isStandaloneService()) {
-        throw new Error('渠道管理需要独立服务（请设置 RNU_SERVICE_URL）。');
+        throw new Error(t('channelManagementStandaloneOnly'));
       }
       await doDelete(servicePath(`/channels/${encodeURIComponent(channelId)}`));
       console.log(t('operationSuccess'));
