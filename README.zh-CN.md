@@ -10,7 +10,7 @@
 
 为 **React Native、Expo、HarmonyOS** 构建并发布 **OTA 热更新**。原生包登记、灰度投放、CI/CD 与 sourcemap 归档，一套命令完成。
 
-[English](./README.md) · [Pakta](https://pakta.site) · [快速开始](#quick-start) · [SDK](https://github.com/pakta-team/rn-update/blob/main/README-CN.md) · [价格](https://pakta.site/pricing)
+[English](./README.md) · [Pakta](https://pakta.site/zh-CN/) · [快速开始](#quick-start) · [命令行工具文档](https://pakta.site/zh-CN/docs/cli/) · [SDK](https://github.com/pakta-team/rn-update/blob/main/README-CN.md) · [价格](https://pakta.site/zh-CN/pricing/)
 
 ---
 

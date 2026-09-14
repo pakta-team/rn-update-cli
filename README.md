@@ -10,7 +10,7 @@
 
 Build and publish **over-the-air (OTA) updates** for **React Native, Expo and HarmonyOS**. Native build registration, staged rollouts, CI/CD and sourcemap archiving from your terminal.
 
-[简体中文](./README.zh-CN.md) · [Pakta](https://pakta.site) · [Quick start](#quick-start) · [SDK](https://github.com/pakta-team/rn-update#readme) · [Pricing](https://pakta.site/pricing)
+[简体中文](./README.zh-CN.md) · [Pakta](https://pakta.site/en/) · [Quick start](#quick-start) · [CLI guide](https://pakta.site/en/docs/cli/) · [SDK](https://github.com/pakta-team/rn-update#readme) · [Pricing](https://pakta.site/en/pricing/)
 
 ---
 

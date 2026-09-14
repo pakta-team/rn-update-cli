@@ -7,7 +7,7 @@
 export default {
   addedToGitignore: 'Added {{line}} to .gitignore',
   androidCrunchPngsWarning:
-    'The crunchPngs option of android seems not disabled (Please ignore this warning if already disabled), which may cause abnormal consumption of mobile network traffic. Please refer to https://github.com/pakta-team/rn-update#quick-start \n',
+    'The crunchPngs option of android seems not disabled (Please ignore this warning if already disabled), which may cause abnormal consumption of mobile network traffic. Please refer to https://github.com/pakta-team/rn-update#installation-and-native-setup \n',
   aabOpenApksFailed: 'Failed to open generated .apks file',
   aabReadUniversalApkFailed: 'Failed to read universal.apk',
   aabUniversalApkNotFound: 'universal.apk not found in generated .apks',

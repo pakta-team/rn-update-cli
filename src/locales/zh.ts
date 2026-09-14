@@ -7,7 +7,7 @@
 export default {
   addedToGitignore: '已将 {{line}} 添加到 .gitignore',
   androidCrunchPngsWarning:
-    'android 的 crunchPngs 选项似乎尚未禁用（如已禁用则请忽略此提示），这可能导致热更包体积异常增大，具体请参考 https://github.com/pakta-team/rn-update/blob/main/README-CN.md#quick-start \n',
+    'android 的 crunchPngs 选项似乎尚未禁用（如已禁用则请忽略此提示），这可能导致热更包体积异常增大，具体请参考 https://github.com/pakta-team/rn-update/blob/main/README-CN.md#安装与原生接入 \n',
   aabOpenApksFailed: '无法打开生成的 .apks 文件',
   aabReadUniversalApkFailed: '无法读取 universal.apk',
   aabUniversalApkNotFound: '在生成的 .apks 中未找到 universal.apk',
