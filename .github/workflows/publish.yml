@@ -1,7 +1,13 @@
+# [INPUT]: 依赖 Git tag、GitHub CLI、Bun/Node/npm 与 npm OIDC
+# [OUTPUT]: 校验、构建 rn-update-cli，自动生成 GitHub Release 并发布到 npm
+# [POS]: 独立公开 CLI 仓库的发布闸门；手动推送 tag 是唯一版本入口
+# [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+
 name: Publish Package to npmjs
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       release_tag:
@@ -10,26 +16,28 @@ on:
         type: string
 
 env:
-  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 concurrency:
-  group: npm-publish-${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
+  group: npm-publish-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
-  id-token: write  # Required for OIDC
   contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest  # npm --provenance requires a GitHub-hosted runner
     timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
+          ref: ${{ inputs.release_tag || github.ref_name }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -77,6 +85,26 @@ jobs:
 
       - name: Verify publishable package contents
         run: npm pack --dry-run --ignore-scripts
+
+      - name: Create GitHub Release from tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; reusing it"
+            exit 0
+          fi
+
+          RELEASE_ARGS=(--verify-tag --generate-notes)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            RELEASE_ARGS+=(--prerelease)
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            "${RELEASE_ARGS[@]}"
 
       - name: Publish to npm
         shell: bash
