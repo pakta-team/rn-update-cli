@@ -1,9 +1,11 @@
 /**
- * [INPUT]: 依赖 CLI API 会话存储、凭据隔离、登录提示与本地化文案
- * [OUTPUT]: 对外提供 login/logout/me 用户命令
+ * [INPUT]: 依赖 CLI API 会话存储、凭据隔离、账号摘要打印、登录提示与本地化文案
+ * [OUTPUT]: 对外提供 login/logout/me 用户命令，me 汇总身份与会员快照并打印套餐状态
  * [POS]: CLI 身份层，所有服务地址统一走邮箱账号管理 API，并复用现有会话与令牌传输协议
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
+
+import { printAccountInfo } from './account';
 import {
   closeSession,
   get,
@@ -11,6 +13,7 @@ import {
   replaceSession,
   saveSession,
   servicePath,
+  unwrapData,
 } from './api';
 import type { CommandContext } from './types';
 import { question } from './utils';
@@ -57,11 +60,17 @@ export const userCommands = {
     console.log(t('loggedOut'));
   },
   me: async () => {
-    const me = await get(servicePath('/auth/me'));
-    const value = me?.data ?? me;
-    for (const k in value) {
+    const me = unwrapData(await get(servicePath('/auth/me')));
+    const membership = unwrapData(await get(servicePath('/membership/me')));
+    printAccountInfo({
+      name: me?.name,
+      email: me?.email,
+      planCode: membership?.plan?.code,
+      planExpiresAt: membership?.expiresAt,
+    });
+    for (const k in me) {
       if (k !== 'ok') {
-        console.log(`${k}: ${value[k]}`);
+        console.log(`${k}: ${me[k]}`);
       }
     }
   },

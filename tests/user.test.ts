@@ -162,10 +162,21 @@ describe('userCommands.me', () => {
     getSpy.mockRestore();
   });
 
+  /** servicePath may or may not carry the standalone prefix; match the route. */
+  const requestedRoutes = () =>
+    getSpy.mock.calls.map((c) => String(c[0]).replace(/^\/admin\/api\/v1/, ''));
+
   test('calls get with /auth/me', async () => {
     await userCommands.me();
 
-    expect(getSpy).toHaveBeenCalledWith('/auth/me');
+    expect(requestedRoutes()).toContain('/auth/me');
+  });
+
+  test('combines identity and membership snapshot', async () => {
+    await userCommands.me();
+
+    expect(requestedRoutes()).toContain('/auth/me');
+    expect(requestedRoutes()).toContain('/membership/me');
   });
 
   test('logs each field except "ok"', async () => {

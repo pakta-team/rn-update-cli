@@ -5,6 +5,12 @@
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 export default {
+  accountSummary:
+    'Account: {{account}} | Plan: {{tier}} | Expires at: {{expiry}}',
+  accountUnknown: 'Unknown',
+  accountNoExpiry: 'No expiry specified',
+  accountRenewalWarning:
+    '[Warning] Your Pakta paid plan expires in {{days}} days. Renew soon to avoid service disruption: {{- url}}',
   addedToGitignore: 'Added {{line}} to .gitignore',
   androidCrunchPngsWarning:
     'The crunchPngs option of android seems not disabled (Please ignore this warning if already disabled), which may cause abnormal consumption of mobile network traffic. Please refer to https://github.com/pakta-team/rn-update/blob/main/rn-update/README.md#installation-and-native-setup \n',
@@ -297,23 +303,22 @@ This can reduce the risk of inconsistent dependencies and supply chain attacks.
     'The selected native package is missing channel or version information, so a deployment target cannot be created.',
   specifiedNativePackageTargetMissingInfo:
     'The specified native package is missing channel or version information, so a deployment target cannot be created.',
-  objectStorageUploadFailed:
-    'Object storage upload failed: HTTP {{status}}',
+  objectStorageUploadFailed: 'Object storage upload failed: HTTP {{status}}',
   objectStoragePartETagMissing:
     'Object storage did not return an ETag for part {{partNumber}}.',
   pdiffServiceRequired:
     'Per-build pdiff registration requires the standalone service. Set RNU_SERVICE_URL.',
   pdiffArgumentsRequired:
     'pdiff registration requires --deploymentId, --nativeVersionId, and --diffFromHash.',
-  pdiffHashInvalid: '--diffFromHash must be a 64-character lowercase SHA-256 digest.',
+  pdiffHashInvalid:
+    '--diffFromHash must be a 64-character lowercase SHA-256 digest.',
   pdiffFileNotFound: 'pdiff file not found: {{filePath}}',
   pdiffFileExtensionInvalid:
     'pdiff files must end with .apk.patch, .ipa.patch, .hap.patch, or .app.patch.',
   standaloneUploadAppIdRequired: 'Standalone service uploads require appId.',
   standalonePackageVersionRequired:
     'Standalone publishing requires packageVersion.',
-  targetsFileReadFailed:
-    'Unable to read the targets file: {{error}}',
+  targetsFileReadFailed: 'Unable to read the targets file: {{error}}',
   targetsFileInvalid:
     'targets.json must be an array or an object containing a targets array.',
   targetsRequired: 'Specify at least one channel/version target.',

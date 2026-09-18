@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * [INPUT]: 依赖 cli.json 命令声明、动态命令加载器、会话存储、版本提示、本地化文案与源码/编译产物时间戳
- * [OUTPUT]: 对外提供 Pakta CLI 进程入口；统一解析参数、恢复会话、调度命令和输出错误，并阻止源码仓库运行过期 lib
+ * [INPUT]: 依赖 cli.json 命令声明、动态命令加载器、会话存储、账号摘要前置提醒、版本提示、本地化文案与源码/编译产物时间戳
+ * [OUTPUT]: 对外提供 Pakta CLI 进程入口；统一解析参数、恢复会话、调度命令、前置输出账号/续费状态和输出错误，并阻止源码仓库运行过期 lib
  * [POS]: CLI 最外层适配器，只负责进程生命周期与命令分发；业务发布、上传和网络协议下沉到 commands 与领域模块
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 import fs from 'fs';
 import path from 'path';
 
+import { showCurrentAccount } from './account';
 import { loadSession } from './api';
 import { commandNames, loadCommandHandler } from './commands';
 import { printVersionCommand } from './utils';
@@ -136,6 +137,9 @@ async function run() {
     const handler = loadCommandHandler(argv.command);
     if (!handler) {
       throw new Error(t('unknownCommand', { command: argv.command }));
+    }
+    if (argv.command !== 'me') {
+      showCurrentAccount();
     }
     await handler(argv);
     // a check still in flight (cold cache) gets a short grace period; the

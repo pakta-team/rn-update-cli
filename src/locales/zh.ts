@@ -5,6 +5,12 @@
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 export default {
+  accountSummary:
+    '当前账号：{{account}} | 套餐：{{tier}} | 有效期至：{{expiry}}',
+  accountUnknown: '未知',
+  accountNoExpiry: '未设置有效期',
+  accountRenewalWarning:
+    '[警告] 您的 Pakta 付费套餐将在 {{days}} 天内到期，请及时续费，以免影响服务：{{- url}}',
   addedToGitignore: '已将 {{line}} 添加到 .gitignore',
   androidCrunchPngsWarning:
     'android 的 crunchPngs 选项似乎尚未禁用（如已禁用则请忽略此提示），这可能导致热更包体积异常增大，具体请参考 https://github.com/pakta-team/rn-update/blob/main/rn-update/README-CN.md#安装与原生接入 \n',
@@ -139,8 +145,7 @@ export default {
   symbolicateDone: '已按版本 {{id}}（{{hash}}）还原 {{count}} 个堆栈帧',
   publishUsage:
     '使用方法: pakta publish ppk后缀文件 --platform ios|android|harmony',
-  rnuVersionNotFound:
-    'rn-update: 无法获取版本号。请在项目目录中运行命令',
+  rnuVersionNotFound: 'rn-update: 无法获取版本号。请在项目目录中运行命令',
   rolloutConfigSet:
     '已在原生版本 {{versions}} 上设置灰度发布 {{rollout}}% 热更包 {{version}}',
   rolloutRangeError: 'rollout 必须是 1-100 的整数',
@@ -258,9 +263,9 @@ export default {
     '渠道管理需要独立服务，请设置 RNU_SERVICE_URL。',
   channelIdRequired: '{{command}} 需要 channelId。',
   deploymentIdsRequired: 'deploymentIds 不能为空。',
-  deploymentInvalid: '投放 {{deploymentId}} 不属于应用 {{appId}} 或缺少目标身份。',
-  deploymentPublishFailed:
-    '发布失败，投放 ID：{{deploymentIds}}',
+  deploymentInvalid:
+    '投放 {{deploymentId}} 不属于应用 {{appId}} 或缺少目标身份。',
+  deploymentPublishFailed: '发布失败，投放 ID：{{deploymentIds}}',
   deploymentStrategyMissing:
     '服务端未返回目标策略：{{channelId}}/{{packageVersion}}。',
   deploymentTargetsSinglePackage: 'deploymentIds 必须属于同一个热更新包。',
