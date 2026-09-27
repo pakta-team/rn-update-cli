@@ -15,7 +15,11 @@ import {
   compareHermesBytecode,
   probeHbcVersion,
 } from '../src/utils/hermes-base';
-import { readHermesSemanticData } from '../src/utils/hermes-raw';
+import { readLiteralBuffers } from '../src/utils/hermes-literals';
+import {
+  auditRawHermesBytecode,
+  readHermesSemanticData,
+} from '../src/utils/hermes-raw';
 
 const hermesc = process.env.HERMESC;
 const hasHermesc = Boolean(hermesc && fs.existsSync(hermesc));
@@ -241,6 +245,114 @@ describe.if(hasHermesc)('lossless Hermes operand audit (real compiler)', () => {
     expect((await compareHermesBytecode(hermesc!, delta, plain)).status).toBe(
       'equivalent',
     );
+  });
+
+  // The pretty pass folds the jump-table offset of (UInt)SwitchImm because a
+  // foreign base shifts it (v96 prints the classic `SwitchImm` name, which
+  // v2.26.1 missed and rejected good bases for). Folding the offset must not
+  // fold what the table holds: swapping two case targets in the delta build
+  // keeps every instruction byte and still has to be rejected.
+  test('a folded switch offset still compares the jump-table targets', async () => {
+    const base = compile(
+      'switch-base',
+      `globalThis.strings = ${JSON.stringify(Array.from({ length: 400 }, (_, i) => `foreign${i}`))};`,
+    );
+    const cases = Array.from(
+      { length: 32 },
+      (_, i) => `case ${i}: return o.k${i} + "v${i}";`,
+    ).join('\n');
+    const source = `globalThis.oi = function oi(x, o, a){ var t = o.alpha + a.beta; switch(x){${cases} default: return t;}};`;
+    const plain = compile('switch-plain', source);
+    const delta = compile('switch-delta', source, base);
+    const isSwitch = (op: string) =>
+      op === 'SwitchImm' || op === 'UIntSwitchImm';
+    const [plainSwitch] = (await operands(plain, isSwitch)).found;
+    const { data, found } = await operands(delta, isSwitch);
+    expect(found).toHaveLength(1);
+    const [inst] = found;
+    // the offset really moved, so the fold is what makes these equivalent
+    expect(inst.values[1]).not.toBe(plainSwitch.values[1]);
+    const unchanged = await compareHermesBytecode(hermesc!, delta, plain);
+    expect(unchanged.status, unchanged.detail).toBe('equivalent');
+
+    // table entries are Int32 targets relative to the instruction, 4-byte aligned
+    const start = Math.ceil((inst.positions[0] - 1 + inst.values[1]) / 4) * 4;
+    const bytes = Buffer.from(data.bytes);
+    const first = bytes.readInt32LE(start);
+    const sixth = bytes.readInt32LE(start + 20);
+    expect(first).not.toBe(sixth);
+    bytes.writeInt32LE(sixth, start);
+    bytes.writeInt32LE(first, start + 20);
+    const swapped = rewrite(delta, bytes);
+    // the pretty pass already catches it by the table's label order...
+    const result = await compareHermesBytecode(hermesc!, swapped, plain);
+    expect(result.status).toBe('different');
+    // ...and the raw audit, which decodes the targets from the binary table,
+    // must reject it on its own too
+    const files: [string, string] = [swapped, plain];
+    const audit = await auditRawHermesBytecode(
+      hermesc!,
+      files,
+      [
+        await readHermesSemanticData(swapped),
+        await readHermesSemanticData(plain),
+      ],
+      [
+        (await readLiteralBuffers(swapped))!,
+        (await readLiteralBuffers(plain))!,
+      ],
+      new AbortController().signal,
+    );
+    expect(audit.status).toBe('different');
+    expect(audit.detail).toContain('raw instruction');
+  });
+
+  // hermesc annotates the string operand of DefineOwnByIdLong but not of
+  // DefineOwnById, so the same instruction prints the text in one build and a
+  // bare id in the other -- and pretty output cuts that text to a display
+  // budget. A base whose string table spills past 16 bits makes the delta
+  // build take the Long form, which used to read as a difference and threw
+  // away a good base for any property name longer than the budget.
+  // v96 and older print the text for both widths of PutNewOwnById, so only
+  // v98's DefineOwnById carries the asymmetry.
+  test.skipIf(!hasHermesc || probeHbcVersion(hermesc!) !== 98)(
+    'a wide DefineOwnById against a foreign base is not a difference',
+    async () => {
+      const base = compile(
+        'wide-base',
+        Array.from(
+          { length: 70000 },
+          (_, i) => `globalThis.s${i} = "base string ${i}";`,
+        ).join('\n'),
+      );
+      // longer than hermesc's display budget, so the Long form prints a cut
+      // name where the short form prints the id
+      const name = 'equivalenceCheckPropertyName';
+      const source = `globalThis.h = function h(s, v){ return {...s, ${name}: v, b: 1}; };`;
+      const plain = compile('wide-plain', source);
+      const delta = compile('wide-delta', source, base);
+      const pretty = (file: string) =>
+        dump(file, true)
+          .split('\n')
+          .filter((line) => line.includes('DefineOwnById'));
+      // the renderings really are the two the fold has to bridge
+      expect(pretty(delta)[0]).toContain('DefineOwnByIdLong');
+      expect(pretty(delta)[0]).toContain(`"${name.slice(0, 17)}"...`);
+      expect(pretty(plain)[0]).not.toContain(name.slice(0, 17));
+      const result = await compareHermesBytecode(hermesc!, delta, plain);
+      expect(result.status, result.detail).toBe('equivalent');
+    },
+    30_000,
+  );
+
+  test('a property name past the pretty limit still has to match', async () => {
+    const object = (name: string) =>
+      `globalThis.h = function h(s, v){ return {...s, ${name}: v}; };`;
+    const a = compile('name-a', object('equivalenceCheckPropertyNameAlpha'));
+    const b = compile('name-b', object('equivalenceCheckPropertyNameBeta'));
+    const result = await compareHermesBytecode(hermesc!, a, b);
+    expect(result.status).toBe('different');
+    expect(result.detail).toContain('raw instruction');
   });
 
   test('overflow function headers retain the same runtime fields', async () => {

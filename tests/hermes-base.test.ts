@@ -618,12 +618,22 @@ describe('helpers', () => {
       outcome: 'rejected',
       detail: 'Function<f>  line 3:\n  a\n  b',
     });
-    expect(rejected).toEqual({
+    expect(rejected.hermesBaseDetail).toMatch(
+      /^Function<fn#[0-9a-f]{8}> line 3: a b$/,
+    );
+    expect(rejected.hermesBaseFingerprint).toMatch(/^[0-9a-f]{32}$/);
+    // the function name is redacted on the way out; the shape is not
+    expect({
+      ...rejected,
+      hermesBaseDetail: '',
+      hermesBaseFingerprint: '',
+    }).toEqual({
       bytecodeVersion: 98,
       baseVersionId: null,
       baseHash: null,
       hermesBaseOutcome: 'rejected',
-      hermesBaseDetail: 'Function<f> line 3: a b',
+      hermesBaseDetail: '',
+      hermesBaseFingerprint: '',
     });
     // no detail → no key (the server rejects JSON null, and '' is noise)
     expect(hermesBaseMeta(null, 98, { outcome: 'none' })).toEqual({
@@ -668,9 +678,22 @@ describe('helpers', () => {
     expect(
       normalizeDisassemblyLine('    JStrictEqualLong L12, r1, r2', strings),
     ).toBe('    JStrictEqual L12, r1, r2');
+    // hermesc prints the string id for DefineOwnById and the (display
+    // truncated) text for DefineOwnByIdLong, which a base compile picks as
+    // soon as the inherited string table pushes the id past 16 bits. Both
+    // renderings fold to one operand; the raw audit compares the name itself.
     expect(
       normalizeDisassemblyLine('    DefineOwnById r7, r8, 2, 11591', strings),
-    ).toBe('    DefineOwnById r7, r8, 2, "foo"');
+    ).toBe('    DefineOwnById r7, r8, 2, <str>');
+    expect(
+      normalizeDisassemblyLine(
+        '    DefineOwnByIdLong r7, r8, 2, "equivalenceCheckP"...',
+        strings,
+      ),
+    ).toBe('    DefineOwnById r7, r8, 2, <str>');
+    expect(() =>
+      normalizeDisassemblyLine('    DefineOwnById r7, r8, 2, 4242', strings),
+    ).toThrow('unresolved string id 4242');
     expect(
       normalizeDisassemblyLine('Offset in debug table: source 0x0000', strings),
     ).toBeNull();
@@ -837,10 +860,7 @@ describe('publish metadata never sends JSON null', () => {
 });
 
 /** the regex-per-line implementation the fast path replaced; must agree */
-function legacyNormalize(
-  line: string,
-  strings: Map<number, string>,
-): string | null {
+function legacyNormalize(line: string): string | null {
   if (/^Offset in debug table/.test(line)) return null;
   let m =
     /^(\s*New(?:Array|Object)WithBuffer)(?:Long)?(AndParent)?\s+(r\d+)(?:, (r\d+))?(.*)$/.exec(
@@ -853,8 +873,8 @@ function legacyNormalize(
   }
   m = /^(\s*J[A-Za-z]+?)(Long)?\s+(L\d+|\d+)(.*)$/.exec(line);
   if (m) return `${m[1]} ${m[3]}${m[4]}`;
-  m = /^(\s*DefineOwnById\w*\s+r\d+, r\d+, \d+, )(\d+)$/.exec(line);
-  if (m) line = `${m[1]}"${strings.get(Number(m[2])) ?? `?${m[2]}`}"`;
+  m = /^(\s*DefineOwnById\w*\s+r\d+, r\d+, \d+, )(\d+)?.*$/.exec(line);
+  if (m) line = `${m[1]}<str>`;
   m = /^(\s*)([A-Za-z]+?)(?:LongIndex|Long|Short)?(\s+.*|)$/.exec(line);
   if (m) line = `${m[1]}${m[2]}${m[3].replace(/\s+/g, ' ')}`;
   m = /^(\s*StringSwitchImm r\d+, \d+, )\d+(, L\d+, \d+)$/.exec(line);
@@ -888,6 +908,7 @@ describe('normalizeDisassemblyLine fast path', () => {
       '    DefineOwnById r0, r1, 1, 3',
       '    DefineOwnByIdLong r0, r1, 1, 42',
       '    DefineOwnByIdShort r0, r1, 1, 7',
+      '    DefineOwnByIdLong r0, r1, 1, "a-name-past-the-p"...',
       '    GetByIdShort   r1, r0, 1, "foo"',
       '    GetById        r1, r0, 1, "foo"',
       '    GetByIdLong    r1, r0, 1, "foo"',
@@ -934,7 +955,7 @@ describe('normalizeDisassemblyLine fast path', () => {
     ];
     for (const line of corpus) {
       expect(normalizeDisassemblyLine(line, strings)).toBe(
-        legacyNormalize(line, strings),
+        legacyNormalize(line),
       );
     }
   });
@@ -1130,7 +1151,13 @@ describe.if(os.platform() !== 'win32')(
       expect(result.functions).toBe(0);
     });
 
-    test('a resolved property name that differs is a difference, wherever the ids point', async () => {
+    test('a DefineOwnById property name is left to the raw audit, never to the text', async () => {
+      // hermesc prints this operand as a string id in one build and as
+      // display-truncated text in the other, so the pretty pass folds it
+      // away. A name that differs is caught by the raw audit against the
+      // binary string table; here the fake compiler has no readable HBC, so
+      // the pass ends unverifiable -- the base is dropped either way and the
+      // text alone never reports 'equivalent'.
       const wrong = DELTA_DUMP.replace(
         'DefineOwnByIdLong r1, r0, 1, 4',
         'DefineOwnByIdLong r1, r0, 1, 3',
@@ -1140,9 +1167,9 @@ describe.if(os.platform() !== 'win32')(
         write('delta.hbc', wrong),
         write('plain.hbc', PLAIN_DUMP),
       );
-      expect(result.status).toBe('different');
+      expect(result.status).toBe('dump-failed');
       expect(result.detail).toBe(
-        'Function<global>(1 params, 3 registers, 0 symbols): +4: DefineOwnById r1, r0, 1, "baz" vs DefineOwnById r1, r0, 1, "foo"',
+        'unsupported or unreadable HBC layout; text-only comparison cannot verify equivalence',
       );
     });
 

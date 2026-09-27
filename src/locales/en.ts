@@ -10,7 +10,7 @@ export default {
   accountUnknown: 'Unknown',
   accountNoExpiry: 'No expiry specified',
   accountRenewalWarning:
-    '[Warning] Your Pakta paid plan expires in {{days}} days. Renew soon to avoid service disruption: {{- url}}',
+    '[Notice] Your Pakta paid plan expires in {{days}} days. Renew soon to avoid service disruption: {{- url}}',
   addedToGitignore: 'Added {{line}} to .gitignore',
   androidCrunchPngsWarning:
     'The crunchPngs option of android seems not disabled (Please ignore this warning if already disabled), which may cause abnormal consumption of mobile network traffic. Please refer to https://github.com/pakta-team/rn-update/blob/main/rn-update/README.md#installation-and-native-setup \n',

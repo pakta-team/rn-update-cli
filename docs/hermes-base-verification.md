@@ -37,7 +37,9 @@ v98 的 shape 索引和 offset 一样只用于定位（delta 可能重排 shape 
 
 为什么不能按 dump 的整段文本比：Hermes 的缓冲区构建器会**重叠/去重**序列化后的字面量——一个字面量的最后一个值字节可以同时是下一个字面量的 tag 字节（模糊测试实测：`61 52 | cd 09 b3 05 11`，前一段以 `[String 82]` 结尾，后一条指令的 offset 正指向 `52`）。顺序解析整段缓冲区（hermesc 的 dump 就是这么打印的）从这里开始失步，之后的条目全是噪声；delta 构建的 id 宽度不同，重叠位置也不同，于是两段"噪声"在某处不一致就被判为差异。2026-09-10 的 20 轮冒烟模糊测试里 3 次误杀全部源于此，改按指令比较后全部等价。无法读二进制缓冲区（文件结构不识别）时两侧一起比较整段文本，仅辅助诊断；即使文本相等也返回 `dump-failed` 并回退 plain，不能以丢失 offset/count 的文本确认等价。结果里 `literals: 'buffer'` 标明这一点。
 
-`normalizeDisassemblyLine` 只折叠表示层差异：按指令解析后的字面量地址、已知宽度后缀、引号外的列对齐空白、switch 表的物理偏移（含经典 `SwitchImm`）、debug 偏移。字符串内部的连续空格、跳转目标标签、寄存器均保留。未知 string ID、无法解码的字面量、未知 buffer 操作数形态直接失败；两侧都无法解析也不等价。
+`normalizeDisassemblyLine` 只折叠表示层差异：按指令解析后的字面量地址、已知宽度后缀、引号外的列对齐空白、switch 表的物理偏移（含经典 `SwitchImm`）、debug 偏移、`DefineOwnById*` 的字符串操作数。字符串内部的连续空格、跳转目标标签、寄存器均保留。
+
+**`DefineOwnById*` 的字符串操作数为什么只能丢给 raw**：Hermes 的 `BytecodeList.def` 只给 `DefineOwnByIdLong` 标了字符串操作数，短形式没标。于是同一条指令有两种 pretty 打印：普通编译 id 小、走短形式，打印**裸 id**；base 编译继承了 base 的字符串表，id 溢出 16 位后改用 Long 形式，打印**文本**，而 pretty 的文本又按显示预算截断（`equivalenceCheckPropertyName` 打成 `"equivalenceCheckP"...`）。两种表示互相还原不了——这个预算对非 ASCII 还会静默截断且不加 `...`（实测 `ab中` 打成 `"ab"`、`abcdefghijklmnop中` 打成 `"abcdefghi"`），所以还原出的完整名字永远等不上打印出来的名字。归一化因此把该操作数整个折成 `<str>`，属性名交给 raw 核对按二进制字符串表全量比较（`hermes-raw.ts` 的 `STRING_OPERANDS` 正是为此显式补了 `DefineOwnById`）。2026-09-22 之前这里会把任何超过显示预算的属性名判成差异，线上因此误杀过 base。未知 string ID、无法解码的字面量、未知 buffer 操作数形态直接失败；两侧都无法解析也不等价。
 
 结果三态：`equivalent` / `different`（带第一处差异：函数、行号、两侧内容，或缓冲区条目）/ `dump-failed`（dump 进程退出码非 0、无法启动、提前结束；带 stderr 末行）。后两种都放弃 base，但日志分开。
 
@@ -54,6 +56,8 @@ pretty 输出本身会截断长字符串与 BigInt、用函数名替代函数索
 ### 3.1 服务端上报校验结果 —— 已完成
 
 CLI（`26764b1`）在 `version/create` 附带 `hermesBaseOutcome: 'used' | 'rejected' | 'dump-failed' | 'none'` 与可选 `hermesBaseDetail`（首处差异或失败原因，≤ 500 个码点）。规则同其它链路字段：只发已知值、绝不发 JSON null、未知就省略字段（单独 `pakta publish` 一个 ppk 时没有校验结果，字段不出现）。outcome 从 `HermesCompileResult.outcome` 带出，与 `base` 分开：base 被拒时 `base` 仍为 null，但 outcome 说明是被拒而不是没找到。base 编译本身失败记为 `none` 并附 `base compile failed: …`。
+
+上报前 detail 会经 `src/utils/failure-fingerprint.ts` 的 `redactFailureDetail` 脱敏：引号内的字符串操作数、`Function<…>` 的函数名、编译器 stderr 里的路径都换成 `str#<hash8>/<长度>` / `fn#<hash8>` / `path#<hash8>.<ext>`，指令形态、寄存器、计数原样保留。本地控制台仍打印未脱敏的原文——属性名在本机排查时才有用；离开这台机器的那份不该带客户代码。同时上报 `hermesBaseFingerprint`（脱敏后再抹掉寄存器号/id/偏移，取 SHA-256 前 16 字节，32 个十六进制字符），同一个缺陷在不同 app、不同寄存器分配下归到同一组。**这个指纹函数只有一份实现**：上报、`scripts/fuzz-hermes-base.ts` 的去重、以后的线上语料回放共用它和同一套测试，否则聚合出来的次数是假的。
 
 本仓库的 Go 服务通过迁移 `server/migrations/00023_update_package_hermes_base.sql` 在 `update_packages` 新增可空列 `hermes_base_outcome` / `hermes_base_detail`；领域层接受缺字段与 JSON null，只拒绝类型错误、未知枚举值和超过 500 个码点的 detail。`UpdatePackage` 的列表/详情接口一并透出，管理台在版本列表和详情抽屉显示徽标。旧的 `version/create` 链路继续透传顶层字段；standalone `update-packages` 链路直接写入这两列。全体应用的拒绝率：
 

@@ -10,7 +10,7 @@ export default {
   accountUnknown: '未知',
   accountNoExpiry: '未设置有效期',
   accountRenewalWarning:
-    '[警告] 您的 Pakta 付费套餐将在 {{days}} 天内到期，请及时续费，以免影响服务：{{- url}}',
+    '[注意] 您的 Pakta 付费套餐将在 {{days}} 天内到期，请及时续费，以免影响服务：{{- url}}',
   addedToGitignore: '已将 {{line}} 添加到 .gitignore',
   androidCrunchPngsWarning:
     'android 的 crunchPngs 选项似乎尚未禁用（如已禁用则请忽略此提示），这可能导致热更包体积异常增大，具体请参考 https://github.com/pakta-team/rn-update/blob/main/rn-update/README-CN.md#安装与原生接入 \n',

@@ -1,5 +1,5 @@
 /**
- * [INPUT]: 依赖 Node 子进程/文件流/HTTP Range、Pakta CLI 临时目录、ZIP 读取原语与 raw HBC 审计器
+ * [INPUT]: 依赖 Node 子进程/文件流/HTTP Range、Pakta CLI 临时目录、ZIP 读取原语、raw HBC 审计器、failure-fingerprint 脱敏指纹与 hermes-cached-object 归一化器
  * [OUTPUT]: 对外提供 Hermes base 选择、缓存、下载、完整语义等价校验、清理及发布元数据能力
  * [POS]: CLI Hermes delta 优化边界，所有失败降级到普通编译，不阻塞发布流程
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -24,7 +24,9 @@ import path from 'path';
 import { PassThrough, Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { tempDir } from './constants';
+import { failureFingerprint, redactFailureDetail } from './failure-fingerprint';
 import { getHbcVersion } from './hbcTransform';
+import { normalizeCachedObjectInstruction } from './hermes-cached-object';
 import {
   type LiteralBuffers,
   LiteralResolver,
@@ -102,6 +104,11 @@ export interface HermesBaseMeta {
   hermesBaseOutcome?: HermesBaseOutcome;
   /** first difference / failure reason; absent when there is none */
   hermesBaseDetail?: string;
+  /**
+   * Grouping key for the same defect across builds and apps, computed from
+   * the unredacted detail. Absent with the detail.
+   */
+  hermesBaseFingerprint?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -993,8 +1000,13 @@ export function hermesBaseMeta(
   };
   if (check) {
     meta.hermesBaseOutcome = check.outcome;
-    const detail = truncateHermesBaseDetail(check.detail);
-    if (detail) meta.hermesBaseDetail = detail;
+    const detail = truncateHermesBaseDetail(
+      redactFailureDetail(check.detail ?? ''),
+    );
+    if (detail) {
+      meta.hermesBaseDetail = detail;
+      meta.hermesBaseFingerprint = failureFingerprint(check.detail ?? '');
+    }
   }
   return meta;
 }
@@ -1087,6 +1099,9 @@ export function normalizeDisassemblyLine(
   if (opcode === 'Offset' && line.startsWith('Offset in debug table', indent)) {
     return null;
   }
+  if (opcode === 'CacheNewObject') {
+    return normalizeCachedObjectInstruction(line, literals);
+  }
   let m: RegExpExecArray | null;
   if (opcode.startsWith('New') && opcode.includes('WithBuffer')) {
     // v98's AndParent form takes the parent object in a second register,
@@ -1118,11 +1133,26 @@ export function normalizeDisassemblyLine(
     if (m) return `${m[1]} ${m[3]}${normalizeOperandSpacing(m[4])}`;
   }
   if (opcode.startsWith('DefineOwnById')) {
-    m = /^(\s*DefineOwnById\w*\s+r\d+, r\d+, \d+, )(\d+)$/.exec(line);
+    // BytecodeList.def annotates the string operand of DefineOwnByIdLong but
+    // not of DefineOwnById, so one instruction has two pretty renderings: the
+    // plain compile keeps small ids and prints the bare id, while a base
+    // compile inherits the base's string table, spills past 16 bits, picks the
+    // Long form and prints the *text* — cut to hermesc's display budget
+    // (`"equivalenceCheckP"...` for `equivalenceCheckPropertyName`). Neither side can
+    // be turned into the other: that budget also drops non-ASCII silently and
+    // without a marker (`ab\u4e2d` prints as `"ab"`), so a resolved name never
+    // equals a printed one. The operand is folded away here and the property
+    // name is compared by the raw audit, which decodes it from the string
+    // table in full (STRING_OPERANDS supplies the missing annotation).
+    m = /^(\s*DefineOwnById\w*\s+r\d+, r\d+, \d+, )(\d+)?.*$/.exec(line);
     if (m) {
-      const text = strings.get(Number(m[2]));
-      if (text === undefined) throw new Error(`unresolved string id ${m[2]}`);
-      line = `${m[1]}${JSON.stringify(text)}`;
+      // An id form whose id is not in the table means the string table was
+      // not read at all; that still fails closed rather than folding an
+      // operand nothing could resolve.
+      if (m[2] !== undefined && !strings.has(Number(m[2]))) {
+        throw new Error(`unresolved string id ${m[2]}`);
+      }
+      line = `${m[1]}<str>`;
     }
   }
   // Operand-width variants of one instruction (GetByIdShort/GetById/GetByIdLong,
