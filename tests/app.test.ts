@@ -139,9 +139,7 @@ describe('getOrCreateChannel', () => {
       name: 'test',
     });
 
-    await expect(
-      getOrCreateChannel('app-1', ' TEST '),
-    ).resolves.toEqual({
+    await expect(getOrCreateChannel('app-1', ' TEST ')).resolves.toEqual({
       channel: { id: 'channel-test', code: 'test', name: 'test' },
       created: true,
     });
@@ -229,7 +227,9 @@ describe('appCommands.createApp', () => {
     process.env.RNU_SERVICE_URL = 'https://updates.example';
     const appId = '11111111-1111-4111-8111-111111111111';
     postSpy = spyOn(api, 'post').mockResolvedValue({ data: { id: appId } });
-    getSpy = spyOn(api, 'get').mockResolvedValue({ data: { appKey: 'standalone-key', platform: 'android' } });
+    getSpy = spyOn(api, 'get').mockResolvedValue({
+      data: { appKey: 'standalone-key', platform: 'android' },
+    });
     readFileSpy = spyOn(fs.promises, 'readFile').mockRejectedValue(
       Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
     );

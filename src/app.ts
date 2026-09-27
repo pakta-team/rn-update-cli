@@ -65,7 +65,12 @@ export function assertPlatform(platform: string): Platform {
 
 /** Parse a legacy positive integer or an RFC 9562 UUID used by standalone services. */
 function parseAppId(value: string): string {
-  if (isStandaloneService() && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+  if (
+    isStandaloneService() &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  ) {
     return value;
   }
   const id = Number(value);
@@ -92,7 +97,9 @@ export async function getSelectedApp(
     }
     throw e;
   }
-  let updateInfo: Partial<Record<Platform, { appId: string | number; appKey: string }>>;
+  let updateInfo: Partial<
+    Record<Platform, { appId: string | number; appKey: string }>
+  >;
   try {
     updateInfo = JSON.parse(raw);
   } catch {
@@ -159,7 +166,11 @@ export async function getOrCreateChannel(
  */
 async function assertAppPlatform(appId: string, platform: Platform) {
   const app = unwrapData<{ platform?: Platform; appKey?: unknown }>(
-    await get(isStandaloneService() ? servicePath(`/apps/${encodeURIComponent(appId)}`) : `/app/${appId}`),
+    await get(
+      isStandaloneService()
+        ? servicePath(`/apps/${encodeURIComponent(appId)}`)
+        : `/app/${appId}`,
+    ),
   );
   if (app.platform && app.platform !== platform) {
     throw new Error(
@@ -250,9 +261,7 @@ async function selectApp({
   options: { platform?: Platform | ''; config?: string };
 }) {
   const platform = await getPlatform(options.platform);
-  const id = args[0]
-    ? parseAppId(args[0])
-    : (await chooseApp(platform)).id;
+  const id = args[0] ? parseAppId(args[0]) : (await chooseApp(platform)).id;
   if (!id) {
     throw new Error(t('invalidId', { id: args[0] }));
   }
@@ -263,8 +272,9 @@ async function selectApp({
   const appKey = app.appKey;
 
   const configPath = options.config || updateJson;
-  let updateInfo: Partial<Record<Platform, { appId: string | number; appKey: string }>> =
-    {};
+  let updateInfo: Partial<
+    Record<Platform, { appId: string | number; appKey: string }>
+  > = {};
   try {
     updateInfo = JSON.parse(await fs.promises.readFile(configPath, 'utf8'));
   } catch (e: any) {
@@ -330,9 +340,7 @@ export function getAppCommands() {
       options: { platform: Platform };
     }) => {
       const { platform } = options;
-      const id = args[0]
-        ? parseAppId(args[0])
-        : (await chooseApp(platform)).id;
+      const id = args[0] ? parseAppId(args[0]) : (await chooseApp(platform)).id;
       if (!id) {
         console.log(t('cancelled'));
         return;
@@ -350,7 +358,11 @@ export function getAppCommands() {
       return listApp(platform);
     },
     /** List channels without exposing service-internal UUIDs as input. */
-    channels: async ({ options }: { options: AppTargetOptions & { json?: boolean } }) => {
+    channels: async ({
+      options,
+    }: {
+      options: AppTargetOptions & { json?: boolean };
+    }) => {
       const appId = await resolveAppId(options);
       if (!isStandaloneService()) {
         throw new Error(t('channelManagementStandaloneOnly'));
@@ -360,13 +372,25 @@ export function getAppCommands() {
         console.log(JSON.stringify(channels, null, 2));
       } else {
         for (const channel of channels) {
-          console.log(`${channel.code}\t${channel.name}\t${channel.id}${channel.paused ? '\tpaused' : ''}`);
+          console.log(
+            `${channel.code}\t${channel.name}\t${channel.id}${channel.paused ? '\tpaused' : ''}`,
+          );
         }
       }
       return channels;
     },
     /** Create a channel; the default channel is created with the application. */
-    createChannel: async ({ options }: { options: AppTargetOptions & { code: string; name: string; nativePackageUrl?: string; paused?: boolean; json?: boolean } }) => {
+    createChannel: async ({
+      options,
+    }: {
+      options: AppTargetOptions & {
+        code: string;
+        name: string;
+        nativePackageUrl?: string;
+        paused?: boolean;
+        json?: boolean;
+      };
+    }) => {
       const appId = await resolveAppId(options);
       if (!isStandaloneService()) {
         throw new Error(t('channelManagementStandaloneOnly'));
@@ -386,9 +410,22 @@ export function getAppCommands() {
       );
       return channel;
     },
-    updateChannel: async ({ args, options }: { args: string[]; options: AppTargetOptions & { code: string; name: string; nativePackageUrl?: string; paused?: boolean; json?: boolean } }) => {
+    updateChannel: async ({
+      args,
+      options,
+    }: {
+      args: string[];
+      options: AppTargetOptions & {
+        code: string;
+        name: string;
+        nativePackageUrl?: string;
+        paused?: boolean;
+        json?: boolean;
+      };
+    }) => {
       const channelId = args[0];
-      if (!channelId) throw new Error(t('channelIdRequired', { command: 'updateChannel' }));
+      if (!channelId)
+        throw new Error(t('channelIdRequired', { command: 'updateChannel' }));
       if (!isStandaloneService()) {
         throw new Error(t('channelManagementStandaloneOnly'));
       }
@@ -409,7 +446,8 @@ export function getAppCommands() {
     },
     deleteChannel: async ({ args }: { args: string[] }) => {
       const channelId = args[0];
-      if (!channelId) throw new Error(t('channelIdRequired', { command: 'deleteChannel' }));
+      if (!channelId)
+        throw new Error(t('channelIdRequired', { command: 'deleteChannel' }));
       if (!isStandaloneService()) {
         throw new Error(t('channelManagementStandaloneOnly'));
       }

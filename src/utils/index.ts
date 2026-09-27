@@ -271,8 +271,12 @@ export async function getAppInfo(fn: string) {
     metaData = JSON.parse(metaJsonFile.toString()) as ParsedAppMetaInfo;
   }
   const { versionName, pakta_build_time, channel: parsedChannel } = metaData;
-  const buildTime = pakta_build_time === undefined ? '' : String(pakta_build_time);
-  const channel = typeof parsedChannel === 'string' && parsedChannel.trim() ? parsedChannel.trim() : 'default';
+  const buildTime =
+    pakta_build_time === undefined ? '' : String(pakta_build_time);
+  const channel =
+    typeof parsedChannel === 'string' && parsedChannel.trim()
+      ? parsedChannel.trim()
+      : 'default';
   if (!buildTime || buildTime === '0') {
     throw new Error(t('buildTimeNotFound'));
   }
@@ -336,7 +340,10 @@ export async function getIpaInfo(fn: string) {
     bundleHash: await sha256(bundleFile),
     bundleFile,
     ...appCredential,
-    channel: typeof parsedChannel === 'string' && parsedChannel.trim() ? parsedChannel.trim() : 'default',
+    channel:
+      typeof parsedChannel === 'string' && parsedChannel.trim()
+        ? parsedChannel.trim()
+        : 'default',
   };
 }
 
@@ -617,7 +624,9 @@ export async function printVersionCommand({
   const standalone = isStandaloneService();
 
   let latest: Array<string | undefined> | undefined;
-  const check = (standalone ? Promise.resolve([]) : getLatestVersions(!wait)).then((versions) => {
+  const check = (
+    standalone ? Promise.resolve([]) : getLatestVersions(!wait)
+  ).then((versions) => {
     latest = versions;
   });
   if (wait) {
@@ -625,13 +634,13 @@ export async function printVersionCommand({
   }
   const [latestCliVersion, latestRnuVersion] = latest ?? [];
 
-  console.log(
-    `rn-update-cli: ${pkg.version}${latestTag(latestCliVersion)}`,
-  );
+  console.log(`rn-update-cli: ${pkg.version}${latestTag(latestCliVersion)}`);
   try {
     const { consumeAutoUpdateNotice } =
       require('../auto-update') as typeof import('../auto-update');
-    const notice = standalone ? undefined : consumeAutoUpdateNotice(pkg.version);
+    const notice = standalone
+      ? undefined
+      : consumeAutoUpdateNotice(pkg.version);
     if (notice?.kind === 'updated') {
       console.log(
         t('autoUpdateSuccess', {
@@ -650,9 +659,7 @@ export async function printVersionCommand({
     // A corrupt/unwritable updater cache cannot affect normal commands.
   }
   if (rnuVersion) {
-    console.log(
-      `rn-update: ${rnuVersion}${latestTag(latestRnuVersion)}`,
-    );
+    console.log(`rn-update: ${rnuVersion}${latestTag(latestRnuVersion)}`);
   } else {
     console.log(t('rnuVersionNotFound'));
   }
@@ -665,9 +672,7 @@ export async function printVersionCommand({
     hinted = true;
     const [cliLatest, rnuLatest] = latest;
     if (isNewer(cliLatest, pkg.version)) {
-      console.log(
-        `rn-update-cli: ${pkg.version}${latestTag(cliLatest)}`,
-      );
+      console.log(`rn-update-cli: ${pkg.version}${latestTag(cliLatest)}`);
     }
     if (rnuVersion && isNewer(rnuLatest, rnuVersion)) {
       console.log(`rn-update: ${rnuVersion}${latestTag(rnuLatest)}`);

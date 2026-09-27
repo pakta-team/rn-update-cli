@@ -11,7 +11,10 @@ const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '..');
 const libDir = path.join(projectRoot, 'lib');
-const typescriptRoot = path.resolve(path.dirname(require.resolve('typescript')), '..');
+const typescriptRoot = path.resolve(
+  path.dirname(require.resolve('typescript')),
+  '..',
+);
 const tscEntry = path.join(typescriptRoot, 'bin', 'tsc');
 
 fs.rmSync(libDir, { recursive: true, force: true });

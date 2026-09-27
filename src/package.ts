@@ -9,10 +9,10 @@ import os from 'os';
 import path from 'path';
 import {
   doDelete,
-  getApiToken,
   getAllPackages,
-  getSession,
+  getApiToken,
   getMembershipEntitlement,
+  getSession,
   post,
   servicePath,
   unwrapData,
@@ -111,10 +111,10 @@ async function assertNativePackageSize(filePath: string, appId: string) {
   // let the existing upload endpoint enforce its server-side limit. As soon
   // as a session or API key is present, fail before parsing/slimming bytes.
   if (!getApiToken() && !getSession()) return;
-	// Harmony .app is a directory containing nested .hap archives. statSync on
-	// the directory only returns filesystem metadata, so quota checks must sum
-	// every regular file before any parser, slimming, or upload side effect.
-	const fileSize = measurePackageBytes(filePath);
+  // Harmony .app is a directory containing nested .hap archives. statSync on
+  // the directory only returns filesystem metadata, so quota checks must sum
+  // every regular file before any parser, slimming, or upload side effect.
+  const fileSize = measurePackageBytes(filePath);
   const entitlement = await getMembershipEntitlement(appId);
   const maxBytes = Number(entitlement.nativePackageMaxBytes);
   if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
@@ -138,7 +138,10 @@ function measurePackageBytes(filePath: string): number {
   }
   return fs
     .readdirSync(filePath)
-    .reduce((total, entry) => total + measurePackageBytes(path.join(filePath, entry)), 0);
+    .reduce(
+      (total, entry) => total + measurePackageBytes(path.join(filePath, entry)),
+      0,
+    );
 }
 
 function parseBooleanOption(value: unknown): boolean {
@@ -180,15 +183,15 @@ async function uploadNativePackage(
   options: PackageCommandOptions,
   config: NativeUploadConfig,
 ): Promise<void> {
-	const selectedApp = options.appId
-		? {
-			appId: String(options.appId),
-			appKey: typeof options.appKey === 'string' ? options.appKey : undefined,
-		}
-		: await getSelectedApp(config.platform, options.config);
-	const { appId, appKey } = selectedApp;
-	await assertNativePackageSize(filePath, appId);
-	const info = await config.getInfo(filePath);
+  const selectedApp = options.appId
+    ? {
+        appId: String(options.appId),
+        appKey: typeof options.appKey === 'string' ? options.appKey : undefined,
+      }
+    : await getSelectedApp(config.platform, options.config);
+  const { appId, appKey } = selectedApp;
+  await assertNativePackageSize(filePath, appId);
+  const info = await config.getInfo(filePath);
   const {
     versionName: extractedVersionName,
     buildTime,

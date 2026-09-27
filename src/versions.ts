@@ -9,13 +9,7 @@ import { compare, satisfies } from 'compare-versions';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import {
-  doDelete,
-  getAllPackages,
-  post,
-  put,
-  uploadFile,
-} from './api';
+import { doDelete, getAllPackages, post, put, uploadFile } from './api';
 import { getPlatform, resolveAppId } from './app';
 import { choosePackage } from './package';
 import {
@@ -140,7 +134,13 @@ async function describePpkBundle(
 export const describePpkBundleForTests = describePpkBundle;
 
 export const versionCommands = {
-  registerPdiff: async ({ args, options }: { args: string[]; options: VersionCommandOptions }) => {
+  registerPdiff: async ({
+    args,
+    options,
+  }: {
+    args: string[];
+    options: VersionCommandOptions;
+  }) => {
     return registerStandalonePdiff(args[0] || '', options);
   },
   publish: async ({
@@ -150,9 +150,16 @@ export const versionCommands = {
     args: string[];
     options: VersionCommandOptions;
   }) => {
-    if (isStandaloneService() && (options.deploymentIds || options.releaseIds)) {
+    if (
+      isStandaloneService() &&
+      (options.deploymentIds || options.releaseIds)
+    ) {
       const appId = await resolveAppId(options);
-      return retryStandalonePublish(appId, String(options.deploymentIds || options.releaseIds), options.dryRun);
+      return retryStandalonePublish(
+        appId,
+        String(options.deploymentIds || options.releaseIds),
+        options.dryRun,
+      );
     }
     const fn = args[0];
     const { name, description, metaInfo, diffFromHash, channel } = options;

@@ -15,10 +15,7 @@ import type ProgressBar from 'progress';
 import { Readable } from 'stream';
 import packageJson from '../package.json';
 import type { Package, Session } from './types';
-import {
-  credentialFileForService,
-  pricingPageUrl,
-} from './utils/constants';
+import { credentialFileForService, pricingPageUrl } from './utils/constants';
 import type { HermesBaseServerRecord } from './utils/hermes-base';
 import { getBaseUrl, isStandaloneService } from './utils/http-helper';
 import { t } from './utils/i18n';
@@ -54,7 +51,9 @@ export function servicePath(route: string): string {
   }
   if (!isStandaloneService()) return route;
   const configured = process.env.RNU_SERVICE_URL?.trim().replace(/\/+$/, '');
-  return configured?.endsWith('/admin/api/v1') ? route : `/admin/api/v1${route}`;
+  return configured?.endsWith('/admin/api/v1')
+    ? route
+    : `/admin/api/v1${route}`;
 }
 
 const userAgent = `rn-update-cli/${packageJson.version}`;
@@ -86,9 +85,7 @@ export const loadSession = async () => {
       replaceSession(JSON.parse(fs.readFileSync(file, 'utf8')));
       savedSession = session;
     } catch (e) {
-      console.error(
-        `Failed to parse file ${file}. Try to remove it manually.`,
-      );
+      console.error(`Failed to parse file ${file}. Try to remove it manually.`);
       throw e;
     }
   }
@@ -229,7 +226,10 @@ async function query(url: string, options: RuntimeRequestInit) {
 
   if (resp.status < 200 || resp.status >= 300) {
     const message =
-      json?.message || json?.error?.message || resp.statusText || `HTTP ${resp.status}`;
+      json?.message ||
+      json?.error?.message ||
+      resp.statusText ||
+      `HTTP ${resp.status}`;
     if (resp.status === 401) {
       // 迁移后旧 JWT/PAT 会统一返回 401；浏览器之外的 CLI 也要立即清理旧会话文件。
       if (session?.token) {
@@ -289,7 +289,11 @@ export async function getMembershipEntitlement(appId: string) {
     name: string;
     nativePackageMaxBytes: number;
     hotUpdatePackageMaxBytes: number;
-  }>(await get(servicePath(`/membership/entitlement/${encodeURIComponent(appId)}`)));
+  }>(
+    await get(
+      servicePath(`/membership/entitlement/${encodeURIComponent(appId)}`),
+    ),
+  );
 }
 
 // Upload deadline: generous for a slow link (1 s/MB on top of a 30 s base,
@@ -420,7 +424,10 @@ function createUploadProgressBar(fileSize: number): ProgressBar {
 /**
  * 监听上传流的数据事件，保持旧服务与 standalone multipart 的进度语义一致。
  */
-function trackUploadProgress(fileStream: NodeJS.ReadableStream, bar: ProgressBar): void {
+function trackUploadProgress(
+  fileStream: NodeJS.ReadableStream,
+  bar: ProgressBar,
+): void {
   fileStream.on('data', (data: Buffer | string) => {
     bar.tick(Buffer.byteLength(data));
   });
@@ -569,10 +576,15 @@ async function uploadMultipartFile(fn: string, appId?: string | number) {
   );
   const partSize = 8 * 1024 * 1024;
   const partCount = Math.max(1, Math.ceil(fileSize / partSize));
-  const partNumbers = Array.from({ length: partCount }, (_, index) => index + 1);
+  const partNumbers = Array.from(
+    { length: partCount },
+    (_, index) => index + 1,
+  );
   let presigned: { parts: Array<{ partNumber: number; url: string }> };
   try {
-    presigned = unwrapData<{ parts: Array<{ partNumber: number; url: string }> }>(
+    presigned = unwrapData<{
+      parts: Array<{ partNumber: number; url: string }>;
+    }>(
       await post(servicePath('/uploads/multipart/parts'), {
         key: created.key,
         uploadId: created.uploadId,
@@ -589,7 +601,8 @@ async function uploadMultipartFile(fn: string, appId?: string | number) {
   }
   const nodeFetch = loadNodeFetch();
   const bar = createUploadProgressBar(fileSize);
-  const completed: Array<{ partNumber: number; eTag: string; size: number }> = [];
+  const completed: Array<{ partNumber: number; eTag: string; size: number }> =
+    [];
   try {
     for (const part of presigned.parts) {
       const start = (part.partNumber - 1) * partSize;
@@ -616,7 +629,9 @@ async function uploadMultipartFile(fn: string, appId?: string | number) {
         throw error;
       }
       if (!response.ok) {
-        throw new Error(t('objectStorageUploadFailed', { status: response.status }));
+        throw new Error(
+          t('objectStorageUploadFailed', { status: response.status }),
+        );
       }
       const eTag = response.headers.get('etag');
       if (!eTag) {
@@ -691,17 +706,32 @@ export const getAllPackages = async (appId: string) => {
     let total = Number.POSITIVE_INFINITY;
     while (packages.length < total) {
       const response = await get(
-        servicePath(`/apps/${encodeURIComponent(appId)}/versions?page=${pageNumber}&pageSize=100`),
+        servicePath(
+          `/apps/${encodeURIComponent(appId)}/versions?page=${pageNumber}&pageSize=100`,
+        ),
       );
       const page = unwrapData<{ items?: Package[]; total?: number }>(response);
       const items = page?.items ?? [];
-      total = typeof page?.total === 'number' ? page.total : packages.length + items.length;
-      packages.push(...items.map((item: Package & { packageVersion?: string; bundleHash?: string; hash?: string }) => ({
-        ...item,
-        name: item.name ?? item.packageVersion ?? '',
-        versionName: item.versionName ?? item.packageVersion,
-        hash: item.hash ?? item.bundleHash,
-      })));
+      total =
+        typeof page?.total === 'number'
+          ? page.total
+          : packages.length + items.length;
+      packages.push(
+        ...items.map(
+          (
+            item: Package & {
+              packageVersion?: string;
+              bundleHash?: string;
+              hash?: string;
+            },
+          ) => ({
+            ...item,
+            name: item.name ?? item.packageVersion ?? '',
+            versionName: item.versionName ?? item.packageVersion,
+            hash: item.hash ?? item.bundleHash,
+          }),
+        ),
+      );
       if (items.length === 0) break;
       pageNumber += 1;
     }
@@ -752,7 +782,9 @@ export async function getChannels(appId: string): Promise<ServiceChannel[]> {
         `/apps/${encodeURIComponent(appId)}/channels?page=${pageNumber}&pageSize=${pageSize}`,
       ),
     );
-    const page = unwrapData<{ items?: ServiceChannel[]; total?: number }>(response);
+    const page = unwrapData<{ items?: ServiceChannel[]; total?: number }>(
+      response,
+    );
     const items = page?.items ?? [];
     channels.push(...items);
     if (

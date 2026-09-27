@@ -19,7 +19,10 @@ type FetchOptions = {
 };
 
 const progressRecords: ProgressRecord[] = [];
-const managementRequests: Array<{ url: string; body?: Record<string, unknown> }> = [];
+const managementRequests: Array<{
+  url: string;
+  body?: Record<string, unknown>;
+}> = [];
 let uploadedBody = Buffer.alloc(0);
 let uploadedWithStream = false;
 
@@ -38,38 +41,40 @@ class TestProgressBar {
   }
 }
 
-const runtimeFetchMock = mock(async (url: string, options: FetchOptions = {}) => {
-  const body = options.body ? JSON.parse(String(options.body)) : undefined;
-  managementRequests.push({ url, body });
+const runtimeFetchMock = mock(
+  async (url: string, options: FetchOptions = {}) => {
+    const body = options.body ? JSON.parse(String(options.body)) : undefined;
+    managementRequests.push({ url, body });
 
-  let responseBody: Record<string, unknown>;
-  if (url.endsWith('/uploads/multipart')) {
-    responseBody = {
-      data: { uploadId: 'upload-1', key: 'object-key' },
-    };
-  } else if (url.endsWith('/uploads/multipart/parts')) {
-    responseBody = {
-      data: {
-        parts: [{ partNumber: 1, url: 'https://storage.test/object-part-1' }],
-      },
-    };
-  } else if (url.endsWith('/uploads/multipart/complete')) {
-    responseBody = {
-      data: {
-        key: 'object-key',
-        url: 'https://storage.test/object-key',
-      },
-    };
-  } else {
-    throw new Error(`Unexpected management URL: ${url}`);
-  }
+    let responseBody: Record<string, unknown>;
+    if (url.endsWith('/uploads/multipart')) {
+      responseBody = {
+        data: { uploadId: 'upload-1', key: 'object-key' },
+      };
+    } else if (url.endsWith('/uploads/multipart/parts')) {
+      responseBody = {
+        data: {
+          parts: [{ partNumber: 1, url: 'https://storage.test/object-part-1' }],
+        },
+      };
+    } else if (url.endsWith('/uploads/multipart/complete')) {
+      responseBody = {
+        data: {
+          key: 'object-key',
+          url: 'https://storage.test/object-key',
+        },
+      };
+    } else {
+      throw new Error(`Unexpected management URL: ${url}`);
+    }
 
-  return {
-    status: 200,
-    statusText: 'OK',
-    text: async () => JSON.stringify(responseBody),
-  };
-});
+    return {
+      status: 200,
+      statusText: 'OK',
+      text: async () => JSON.stringify(responseBody),
+    };
+  },
+);
 
 const nodeFetchMock = mock(async (_url: string, options: FetchOptions = {}) => {
   const body = options.body;
@@ -146,7 +151,10 @@ describe('standalone multipart upload progress', () => {
     expect(progressRecords).toHaveLength(1);
     expect(progressRecords[0].total).toBe(expectedBody.length);
     expect(
-      progressRecords[0].increments.reduce((total, amount) => total + amount, 0),
+      progressRecords[0].increments.reduce(
+        (total, amount) => total + amount,
+        0,
+      ),
     ).toBe(expectedBody.length);
     expect(managementRequests.map(({ url }) => url)).toEqual([
       'http://standalone.test/admin/api/v1/uploads/multipart',

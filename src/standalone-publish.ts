@@ -82,7 +82,9 @@ async function chooseStandaloneTarget(
 ): Promise<StandalonePublishTarget> {
   const channels = await getChannels(appId);
   const allPackages = (await getAllPackages(appId)) ?? [];
-  const requestedChannel = String(options.channel || '').trim().toLowerCase();
+  const requestedChannel = String(options.channel || '')
+    .trim()
+    .toLowerCase();
   let packages = allPackages;
 
   if (requestedChannel) {
@@ -126,8 +128,12 @@ async function chooseStandaloneTarget(
   };
 }
 
-function standaloneOperationKey(appId: string, packageId: string, deploymentIds: string[]) {
-  const identity = [appId, packageId, ...deploymentIds].sort().join("\x00");
+function standaloneOperationKey(
+  appId: string,
+  packageId: string,
+  deploymentIds: string[],
+) {
+  const identity = [appId, packageId, ...deploymentIds].sort().join('\x00');
   return `cli-${sha256Hex(Buffer.from(identity)).slice(0, 64)}`;
 }
 
@@ -141,7 +147,10 @@ function standaloneDraftOperationKey(
     packageId,
     'save',
     ...targets
-      .map((target) => `${target.channelId}\x00${target.packageVersion}\x00${target.rollout}`)
+      .map(
+        (target) =>
+          `${target.channelId}\x00${target.packageVersion}\x00${target.rollout}`,
+      )
       .sort(),
   ].join('\x00');
   return `cli-${sha256Hex(Buffer.from(identity)).slice(0, 64)}`;
@@ -174,7 +183,10 @@ async function findStandalonePackageByHash(appId: string, hash: string) {
     }>(response);
     const existing = result.items?.find((item) => item.hash === hash);
     if (existing) return existing;
-    if (!result.items?.length || (result.total !== undefined && page * pageSize >= result.total)) {
+    if (
+      !result.items?.length ||
+      (result.total !== undefined && page * pageSize >= result.total)
+    ) {
       return undefined;
     }
   }
@@ -246,36 +258,46 @@ async function resolveStandaloneTargets(
   if (rawTargets.length === 0) {
     throw new Error(t('targetsRequired'));
   }
-  return Promise.all(rawTargets.map(async (target) => {
-    const rawChannel = target.channel || options.channel || 'default';
-    let channel = target.channelId
-      ? byId.get(target.channelId)
-      : byCode.get(rawChannel.trim().toLowerCase());
-    if (!channel && !target.channelId && !dryRun) {
-      const resolved = await getOrCreateChannel(appId, rawChannel);
-      channel = resolved.channel;
-      if (resolved.created) {
-        console.log(t('channelAutoCreated', { channel: rawChannel.trim().toLowerCase() }));
+  return Promise.all(
+    rawTargets.map(async (target) => {
+      const rawChannel = target.channel || options.channel || 'default';
+      let channel = target.channelId
+        ? byId.get(target.channelId)
+        : byCode.get(rawChannel.trim().toLowerCase());
+      if (!channel && !target.channelId && !dryRun) {
+        const resolved = await getOrCreateChannel(appId, rawChannel);
+        channel = resolved.channel;
+        if (resolved.created) {
+          console.log(
+            t('channelAutoCreated', {
+              channel: rawChannel.trim().toLowerCase(),
+            }),
+          );
+        }
       }
-    }
-    if (!channel) {
-      throw new Error(
-        t('channelNotRegistered', {
-          channel: target.channelId || target.channel || options.channel || 'default',
-        }),
+      if (!channel) {
+        throw new Error(
+          t('channelNotRegistered', {
+            channel:
+              target.channelId ||
+              target.channel ||
+              options.channel ||
+              'default',
+          }),
+        );
+      }
+      const packageVersion = String(
+        target.packageVersion || options.packageVersion || '',
+      ).trim();
+      if (!packageVersion) {
+        throw new Error(t('standalonePackageVersionRequired'));
+      }
+      const targetRollout = resolveTargetRollout(
+        target.rollout === undefined ? options.rollout : target.rollout,
       );
-    }
-    const packageVersion = String(
-      target.packageVersion || options.packageVersion || '',
-    ).trim();
-    if (!packageVersion) {
-      throw new Error(t('standalonePackageVersionRequired'));
-    }
-    const targetRollout = resolveTargetRollout(
-      target.rollout === undefined ? options.rollout : target.rollout,
-    );
-    return { channelId: channel.id, packageVersion, rollout: targetRollout };
-  }));
+      return { channelId: channel.id, packageVersion, rollout: targetRollout };
+    }),
+  );
 }
 
 export async function publishStandalone(
@@ -298,20 +320,15 @@ export async function publishStandalone(
   }
 
   if (options.dryRun) {
-    console.log(
-      JSON.stringify(
-        { appId, targets, dryRun: true },
-        null,
-        2,
-      ),
-    );
+    console.log(JSON.stringify({ appId, targets, dryRun: true }, null, 2));
     return String(options.name || 'dry-run');
   }
 
   const hash = sha256Hex(fs.readFileSync(fn));
-  const sourcemapPath = typeof options.sourcemap === 'string' && options.sourcemap.trim()
-    ? options.sourcemap.trim()
-    : undefined;
+  const sourcemapPath =
+    typeof options.sourcemap === 'string' && options.sourcemap.trim()
+      ? options.sourcemap.trim()
+      : undefined;
   if (sourcemapPath && !fs.existsSync(sourcemapPath)) {
     throw new Error(t('sourceMapNotFound', { path: sourcemapPath }));
   }
@@ -353,7 +370,9 @@ export async function publishStandalone(
     try {
       const [uploaded, sourceMapUpload] = await Promise.all([
         uploadFile(fn, undefined, appId),
-        uploadSourcemapPath ? uploadFile(uploadSourcemapPath, undefined, appId) : Promise.resolve(undefined),
+        uploadSourcemapPath
+          ? uploadFile(uploadSourcemapPath, undefined, appId)
+          : Promise.resolve(undefined),
       ]);
       const fullKey = uploaded.key || uploaded.hash;
       const sourceMapKey = sourceMapUpload?.key || sourceMapUpload?.hash;
@@ -366,7 +385,9 @@ export async function publishStandalone(
           metaInfo,
           ...standaloneHermesOutcomeFields(options.hermesBase),
           diffVersion: 0,
-          ...(options.diffFromHash ? { diffFromHash: options.diffFromHash } : {}),
+          ...(options.diffFromHash
+            ? { diffFromHash: options.diffFromHash }
+            : {}),
           fullKey,
           diffKey: '',
           pdiffKey: '',
@@ -398,9 +419,12 @@ export async function publishStandalone(
   }
 
   const deploymentResponse = await get(
-    servicePath(`/update-packages/${encodeURIComponent(packageValue.id)}/deployments`),
+    servicePath(
+      `/update-packages/${encodeURIComponent(packageValue.id)}/deployments`,
+    ),
   );
-  const existingDeployments = unwrapData<StandaloneDeployment[]>(deploymentResponse);
+  const existingDeployments =
+    unwrapData<StandaloneDeployment[]>(deploymentResponse);
   const existingByTarget = new Map(
     existingDeployments.map((deployment) => [
       `${deployment.channelId}\x00${deployment.packageVersion}`,
@@ -422,7 +446,8 @@ export async function publishStandalone(
   }
 
   const missingTargets = targets.filter(
-    (target) => !existingByTarget.has(`${target.channelId}\x00${target.packageVersion}`),
+    (target) =>
+      !existingByTarget.has(`${target.channelId}\x00${target.packageVersion}`),
   );
   const savedByTarget = new Map<string, StandaloneDeployment>();
   if (missingTargets.length > 0) {
@@ -454,25 +479,43 @@ export async function publishStandalone(
     }
   }
 
-  const created: Array<StandaloneDeployment & { rollout: number }> = targets.map((target) => {
-    const targetKey = `${target.channelId}\x00${target.packageVersion}`;
-    const deployment = existingByTarget.get(targetKey) || savedByTarget.get(targetKey);
-    if (!deployment) {
-      throw new Error(
-        t('deploymentStrategyMissing', {
-          channelId: target.channelId,
-          packageVersion: target.packageVersion,
-        }),
-      );
-    }
-    return { ...deployment, ...target, packageId: packageValue.id };
-  });
-  const idempotencyKey = standaloneOperationKey(appId, packageValue.id, created.map((deployment) => deployment.id));
-  try {
-    await post(servicePath(`/apps/${encodeURIComponent(appId)}/deployments/batch`), {
-      idempotencyKey,
-      commands: created.map((deployment) => ({ id: deployment.id, packageId: packageValue.id, channelId: deployment.channelId, packageVersion: deployment.packageVersion, rollout: deployment.rollout, forceBoot: false, action: 'publish', expectedRevision: deployment.revision })),
+  const created: Array<StandaloneDeployment & { rollout: number }> =
+    targets.map((target) => {
+      const targetKey = `${target.channelId}\x00${target.packageVersion}`;
+      const deployment =
+        existingByTarget.get(targetKey) || savedByTarget.get(targetKey);
+      if (!deployment) {
+        throw new Error(
+          t('deploymentStrategyMissing', {
+            channelId: target.channelId,
+            packageVersion: target.packageVersion,
+          }),
+        );
+      }
+      return { ...deployment, ...target, packageId: packageValue.id };
     });
+  const idempotencyKey = standaloneOperationKey(
+    appId,
+    packageValue.id,
+    created.map((deployment) => deployment.id),
+  );
+  try {
+    await post(
+      servicePath(`/apps/${encodeURIComponent(appId)}/deployments/batch`),
+      {
+        idempotencyKey,
+        commands: created.map((deployment) => ({
+          id: deployment.id,
+          packageId: packageValue.id,
+          channelId: deployment.channelId,
+          packageVersion: deployment.packageVersion,
+          rollout: deployment.rollout,
+          forceBoot: false,
+          action: 'publish',
+          expectedRevision: deployment.revision,
+        })),
+      },
+    );
   } catch (error) {
     console.error(
       t('deploymentPublishFailed', {
@@ -483,7 +526,12 @@ export async function publishStandalone(
   }
   console.log(
     JSON.stringify(
-      { packageId: packageValue.id, deploymentIds: created.map((deployment) => deployment.id), idempotencyKey, targets },
+      {
+        packageId: packageValue.id,
+        deploymentIds: created.map((deployment) => deployment.id),
+        idempotencyKey,
+        targets,
+      },
       null,
       2,
     ),
@@ -523,27 +571,70 @@ export async function retryStandalonePublish(
         forceBoot: boolean;
         revision: number;
       }>(response);
-      if (!deployment || deployment.applicationId !== appId || !deployment.packageId || !deployment.channelId || !deployment.packageVersion) {
+      if (
+        !deployment ||
+        deployment.applicationId !== appId ||
+        !deployment.packageId ||
+        !deployment.channelId ||
+        !deployment.packageVersion
+      ) {
         throw new Error(t('deploymentInvalid', { deploymentId, appId }));
       }
       return deployment;
     }),
   );
-  const commands = deployments.map(({ id, packageId, channelId, packageVersion, rollout, forceBoot, revision }) => ({ id, packageId, channelId, packageVersion, rollout, forceBoot, revision, action: 'publish' }));
-  const packageIds = [...new Set(deployments.map((deployment) => deployment.packageId))];
+  const commands = deployments.map(
+    ({
+      id,
+      packageId,
+      channelId,
+      packageVersion,
+      rollout,
+      forceBoot,
+      revision,
+    }) => ({
+      id,
+      packageId,
+      channelId,
+      packageVersion,
+      rollout,
+      forceBoot,
+      revision,
+      action: 'publish',
+    }),
+  );
+  const packageIds = [
+    ...new Set(deployments.map((deployment) => deployment.packageId)),
+  ];
   if (packageIds.length !== 1) {
     throw new Error(t('deploymentTargetsSinglePackage'));
   }
-  const idempotencyKey = standaloneOperationKey(appId, packageIds[0], deploymentIds);
+  const idempotencyKey = standaloneOperationKey(
+    appId,
+    packageIds[0],
+    deploymentIds,
+  );
   if (dryRun) {
-    console.log(JSON.stringify({ appId, deploymentIds, idempotencyKey, commands, dryRun: true }, null, 2));
+    console.log(
+      JSON.stringify(
+        { appId, deploymentIds, idempotencyKey, commands, dryRun: true },
+        null,
+        2,
+      ),
+    );
     return deploymentIds.join(',');
   }
   await post(
     servicePath(`/apps/${encodeURIComponent(appId)}/deployments/batch`),
     { idempotencyKey, commands },
   );
-  console.log(JSON.stringify({ deploymentIds, idempotencyKey, commands, retried: true }, null, 2));
+  console.log(
+    JSON.stringify(
+      { deploymentIds, idempotencyKey, commands, retried: true },
+      null,
+      2,
+    ),
+  );
   return deploymentIds.join(',');
 }
 
@@ -562,9 +653,13 @@ export async function registerStandalonePdiff(
   if (!isStandaloneService()) {
     throw new Error(t('pdiffServiceRequired'));
   }
-  const deploymentId = String(options.deploymentId || options.releaseId || '').trim();
+  const deploymentId = String(
+    options.deploymentId || options.releaseId || '',
+  ).trim();
   const nativeVersionId = String(options.nativeVersionId || '').trim();
-  const diffFromHash = String(options.diffFromHash || '').trim().toLowerCase();
+  const diffFromHash = String(options.diffFromHash || '')
+    .trim()
+    .toLowerCase();
   if (!deploymentId || !nativeVersionId || !diffFromHash) {
     throw new Error(t('pdiffArgumentsRequired'));
   }
@@ -572,15 +667,31 @@ export async function registerStandalonePdiff(
     throw new Error(t('pdiffHashInvalid'));
   }
   if (!filePath || !fs.existsSync(filePath)) {
-    throw new Error(t('pdiffFileNotFound', { filePath: filePath || t('unspecified') }));
+    throw new Error(
+      t('pdiffFileNotFound', { filePath: filePath || t('unspecified') }),
+    );
   }
-  const patchSuffixes = ['.apk.patch', '.ipa.patch', '.hap.patch', '.app.patch'];
-  if (!patchSuffixes.some((suffix) => filePath.toLowerCase().endsWith(suffix))) {
+  const patchSuffixes = [
+    '.apk.patch',
+    '.ipa.patch',
+    '.hap.patch',
+    '.app.patch',
+  ];
+  if (
+    !patchSuffixes.some((suffix) => filePath.toLowerCase().endsWith(suffix))
+  ) {
     throw new Error(t('pdiffFileExtensionInvalid'));
   }
   const appId = await resolveAppId(options);
   if (options.dryRun) {
-    const preview = { appId, deploymentId, nativeVersionId, diffFromHash, filePath, dryRun: true };
+    const preview = {
+      appId,
+      deploymentId,
+      nativeVersionId,
+      diffFromHash,
+      filePath,
+      dryRun: true,
+    };
     console.log(JSON.stringify(preview, null, 2));
     return deploymentId;
   }

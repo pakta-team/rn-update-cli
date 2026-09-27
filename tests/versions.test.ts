@@ -336,7 +336,8 @@ describe('standalone interactive publish', () => {
       key: 'full-key',
     });
     servicePathSpy = spyOn(api, 'servicePath').mockImplementation(
-      (route: string) => `/admin/api/v1${route.startsWith('/') ? route : `/${route}`}`,
+      (route: string) =>
+        `/admin/api/v1${route.startsWith('/') ? route : `/${route}`}`,
     );
     postSpy = spyOn(api, 'post').mockImplementation(
       async (url: string, body?: Record<string, unknown>) => {
@@ -344,7 +345,9 @@ describe('standalone interactive publish', () => {
           return { data: { id: updatePackageId } };
         }
         if (url.endsWith(`/apps/${appId}/deployments/batch`)) {
-          const command = (body?.commands as Array<Record<string, unknown>>)?.[0];
+          const command = (
+            body?.commands as Array<Record<string, unknown>>
+          )?.[0];
           if (command?.action === 'save') {
             return {
               data: [
@@ -365,7 +368,13 @@ describe('standalone interactive publish', () => {
         throw new Error(`unexpected POST ${url}`);
       },
     );
-    const answers = ['interactive-v1', 'description', '{}', 'y', nativePackageId];
+    const answers = [
+      'interactive-v1',
+      'description',
+      '{}',
+      'y',
+      nativePackageId,
+    ];
     questionSpy = spyOn(utils, 'question').mockImplementation(
       async () => answers.shift() ?? '',
     );

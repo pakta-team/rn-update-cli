@@ -9,6 +9,7 @@ import { get, post } from './api';
 import type { Package, Version } from './types';
 import { isNonInteractive, loadTtyTable, question } from './utils';
 import { t } from './utils/i18n';
+
 type Deps = Record<string, string>;
 type DepChangeType = 'added' | 'removed' | 'changed';
 
@@ -426,4 +427,3 @@ export const bindVersionToPackages = async ({
   }
   console.log(t('operationComplete', { count: pkgs.length }));
 };
-
