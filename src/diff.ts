@@ -4,17 +4,18 @@
  * [POS]: CLI 本地补丁生成层，将旧 PPK 或原生基线与目标 PPK 转为补丁文件；上传登记由 standalone-publish 承担，普通发布不会自动调用本层
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
-import { createHash } from 'node:crypto';
-import * as fs from 'fs-extra';
+
+import fs from 'fs';
 import { npm, yarn } from 'global-dirs';
 import os from 'os';
 import path from 'path';
 import type { Entry, ZipFile as YauzlZipFile } from 'yauzl';
-import { ZipFile as YazlZipFile } from 'yazl';
+import type { ZipFile as YazlZipFile } from 'yazl';
 import { resolveNativePackageEntry } from './native-package';
 import type { CommandContext, Platform } from './types';
 import { translateOptions } from './utils';
 import { isPPKBundleFileName, scriptName, tempDir } from './utils/constants';
+import { sha256File } from './utils/hash';
 import {
   type HbcTransformMeta,
   transformHbcFile,
@@ -24,7 +25,9 @@ import {
 } from './utils/hbcTransform';
 import { t } from './utils/i18n';
 import {
+  createOutputZip,
   enumZipEntries,
+  openEntryStream,
   readEntry,
   readEntryPrefix,
   writeEntry,
@@ -137,38 +140,6 @@ function basename(fn: string): string | undefined {
   return m?.[1];
 }
 
-function createOutputZip(output: string) {
-  fs.ensureDirSync(path.dirname(output));
-  const zipfile = new YazlZipFile();
-  const writeStream = fs.createWriteStream(output);
-  const writePromise = new Promise<void>((resolve, reject) => {
-    zipfile.outputStream.on('error', reject);
-    // without this, a full disk / read-only target left the promise pending
-    writeStream.on('error', reject);
-    zipfile.outputStream.pipe(writeStream).on('close', () => {
-      resolve(void 0);
-    });
-  });
-  // 失败时释放输出 fd 并删掉半成品,避免残留一个截断的 patch 包
-  const abort = async () => {
-    writePromise.catch(() => {});
-    zipfile.outputStream.unpipe(writeStream);
-    // yazl 的 outputStream 类型声明缺 destroy,运行时是 PassThrough
-    (zipfile.outputStream as unknown as { destroy(): void }).destroy();
-    if (!writeStream.closed) {
-      // 等 fd 真正关闭再删文件,避免 Windows 上删除被占用文件失败
-      await new Promise<void>((resolve) => {
-        writeStream.once('close', () => resolve());
-        if (!writeStream.destroyed) {
-          writeStream.destroy();
-        }
-      });
-    }
-    await fs.rm(output, { force: true });
-  };
-  return { zipfile, writePromise, abort };
-}
-
 /**
  * 打开输出包,执行 build 填充条目并返回 manifest,最后写入 __diff.json
  * 收尾。build 或收尾任何一步失败都会关闭输出流、删除半成品并重新抛出。
@@ -234,7 +205,7 @@ const bundleSourceSize = (source: BundleSource) =>
   source.kind === 'buffer' ? source.data.length : source.size;
 
 const bundleSourceBuffer = async (source: BundleSource) =>
-  source.kind === 'buffer' ? source.data : fs.readFile(source.path);
+  source.kind === 'buffer' ? source.data : fs.promises.readFile(source.path);
 
 async function bundleSourceFile(
   source: BundleSource,
@@ -243,29 +214,21 @@ async function bundleSourceFile(
   if (source.kind === 'file') {
     return source.path;
   }
-  await fs.writeFile(outputPath, source.data);
+  await fs.promises.writeFile(outputPath, source.data);
   return outputPath;
-}
-
-async function hashFile(filePath: string): Promise<string> {
-  const hash = createHash('sha256');
-  for await (const chunk of fs.createReadStream(filePath)) {
-    hash.update(chunk as Buffer);
-  }
-  return hash.digest('hex');
 }
 
 async function filesEqual(leftPath: string, rightPath: string) {
   const [leftStat, rightStat] = await Promise.all([
-    fs.stat(leftPath),
-    fs.stat(rightPath),
+    fs.promises.stat(leftPath),
+    fs.promises.stat(rightPath),
   ]);
   if (leftStat.size !== rightStat.size) {
     return false;
   }
   const [leftHash, rightHash] = await Promise.all([
-    hashFile(leftPath),
-    hashFile(rightPath),
+    sha256File(leftPath),
+    sha256File(rightPath),
   ]);
   return leftHash === rightHash;
 }
@@ -328,7 +291,7 @@ async function buildStreamBundlePatch(
   const rawPatchFile = path.join(tempRoot, 'patch-raw.bin');
   await diffStreamFn(rawOldFile, rawNewFile, rawPatchFile);
   let patchFile = rawPatchFile;
-  let patchBytes = (await fs.stat(rawPatchFile)).size;
+  let patchBytes = (await fs.promises.stat(rawPatchFile)).size;
   let chosenPair: typeof pair = null;
   if (pair) {
     const transformedPatchFile = path.join(tempRoot, 'patch-transformed.bin');
@@ -337,7 +300,8 @@ async function buildStreamBundlePatch(
       transformedNewFile,
       transformedPatchFile,
     );
-    const transformedPatchBytes = (await fs.stat(transformedPatchFile)).size;
+    const transformedPatchBytes = (await fs.promises.stat(transformedPatchFile))
+      .size;
     const metaOverhead = Buffer.byteLength(JSON.stringify(pair.meta));
     if (transformedPatchBytes + metaOverhead < patchBytes) {
       patchFile = transformedPatchFile;
@@ -399,6 +363,41 @@ async function buildStreamBundlePatch(
   };
 }
 
+/** origin 与 new 中较大者达到流式阈值时走流式 diff */
+function exceedsStreamThreshold(
+  options: BundleDiffOptions,
+  originSource: BundleSource | undefined,
+  newSize: number,
+): originSource is BundleSource {
+  return (
+    !!options.streamThresholdBytes &&
+    !!originSource &&
+    Math.max(bundleSourceSize(originSource), newSize) >=
+      options.streamThresholdBytes
+  );
+}
+
+/** 把 zip 条目落盘到 workRoot 下的临时目录,作为文件型 BundleSource */
+async function materializeEntry(
+  entry: Entry,
+  zipFile: YauzlZipFile,
+  workRoot: string,
+  prefix: string,
+): Promise<BundleSource> {
+  const filePath = path.join(
+    fs.mkdtempSync(path.join(workRoot, prefix)),
+    'bundle.bin',
+  );
+  const startedAt = performance.now();
+  await writeEntry(entry, zipFile, filePath);
+  return {
+    kind: 'file',
+    path: filePath,
+    size: entry.uncompressedSize,
+    materializeDurationMs: performance.now() - startedAt,
+  };
+}
+
 /**
  * 生成 bundle patch:默认现状路径;开启 hbcTransform 时对 Hermes bundle
  * 做双候选择优(baseline vs 变换域 + 元数据开销),且变换候选必须通过
@@ -412,10 +411,7 @@ async function buildBundlePatch(
   workRoot: string,
 ): Promise<BundlePatchResult> {
   if (
-    options.streamThresholdBytes &&
-    originSource &&
-    Math.max(bundleSourceSize(originSource), bundleSourceSize(newSource)) >=
-      options.streamThresholdBytes
+    exceedsStreamThreshold(options, originSource, bundleSourceSize(newSource))
   ) {
     return buildStreamBundlePatch(originSource, newSource, options, workRoot);
   }
@@ -477,26 +473,13 @@ async function addBundlePatch(
   hbcTransformMetas: Record<string, HbcTransformMeta>,
   workRoot: string,
 ) {
-  const shouldStream =
-    !!bundleOptions.streamThresholdBytes &&
-    !!originSource &&
-    Math.max(bundleSourceSize(originSource), entry.uncompressedSize) >=
-      bundleOptions.streamThresholdBytes;
-  let newSource: BundleSource;
-  if (shouldStream) {
-    const nextRoot = fs.mkdtempSync(path.join(workRoot, 'next-'));
-    const nextPath = path.join(nextRoot, 'bundle.bin');
-    const startedAt = performance.now();
-    await writeEntry(entry, nextZipfile, nextPath);
-    newSource = {
-      kind: 'file',
-      path: nextPath,
-      size: entry.uncompressedSize,
-      materializeDurationMs: performance.now() - startedAt,
-    };
-  } else {
-    newSource = { kind: 'buffer', data: await readEntry(entry, nextZipfile) };
-  }
+  const newSource: BundleSource = exceedsStreamThreshold(
+    bundleOptions,
+    originSource,
+    entry.uncompressedSize,
+  )
+    ? await materializeEntry(entry, nextZipfile, workRoot, 'next-')
+    : { kind: 'buffer', data: await readEntry(entry, nextZipfile) };
 
   const { patch, hbcTransform } = await buildBundlePatch(
     diffFn,
@@ -525,16 +508,7 @@ async function readOriginBundleSource(
   if (!bundleOptions.streamThresholdBytes) {
     return { kind: 'buffer', data: await readEntry(entry, zipFile) };
   }
-  const originRoot = fs.mkdtempSync(path.join(workRoot, 'origin-'));
-  const originPath = path.join(originRoot, 'bundle.bin');
-  const startedAt = performance.now();
-  await writeEntry(entry, zipFile, originPath);
-  return {
-    kind: 'file',
-    path: originPath,
-    size: entry.uncompressedSize,
-    materializeDurationMs: performance.now() - startedAt,
-  };
+  return materializeEntry(entry, zipFile, workRoot, 'origin-');
 }
 
 async function addFileFromZipEntry(
@@ -547,24 +521,15 @@ async function addFileFromZipEntry(
     nextZipfile,
     ZIP_ENTRY_SNIFF_BYTES,
   );
+  const readStream = await openEntryStream(entry, nextZipfile);
   await new Promise<void>((resolve, reject) => {
-    nextZipfile.openReadStream(entry, (err, readStream) => {
-      if (err) {
-        return reject(err);
-      }
-      if (!readStream) {
-        return reject(new Error(`Unable to read zip entry: ${entry.fileName}`));
-      }
-      zipfile.addReadStream(
-        readStream,
-        entry.fileName,
-        zipOptionsForPayloadEntry(entry.fileName, entryPrefix),
-      );
-      readStream.on('error', reject);
-      readStream.on('end', () => {
-        resolve(void 0);
-      });
-    });
+    zipfile.addReadStream(
+      readStream,
+      entry.fileName,
+      zipOptionsForPayloadEntry(entry.fileName, entryPrefix),
+    );
+    readStream.on('error', reject);
+    readStream.on('end', () => resolve());
   });
 }
 

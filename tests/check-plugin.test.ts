@@ -1,69 +1,66 @@
-import { describe, expect, test } from 'bun:test';
-
+/**
+ * [INPUT]: 依赖 checkPlugins、本地化文案、临时平台配置与控制台 spy
+ * [OUTPUT]: 验证 Sentry 缺省、单平台及双平台检测的 bundle 参数和单次日志契约
+ * [POS]: CLI 插件检测回归边界，以真实配置文件锁定检测结果，不执行插件安装
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { checkPlugins } from '../src/utils/check-plugin';
-import * as pluginConfig from '../src/utils/plugin-config';
+import { t } from '../src/utils/i18n';
 
 describe('checkPlugins', () => {
-  test('should detect plugins concurrently (simulated)', async () => {
-    const mockPlugins = [
-      {
-        name: 'plugin1',
-        bundleParams: { p1: true },
-        detect: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-          return true;
-        },
-      },
-      {
-        name: 'plugin2',
-        bundleParams: { p2: true },
-        detect: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-          return true;
-        },
-      },
-      {
-        name: 'plugin3',
-        bundleParams: { p3: true },
-        detect: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-          return true;
-        },
-      },
-    ];
+  let tmpDir: string;
+  let origCwd: string;
+  let logSpy: ReturnType<typeof spyOn>;
 
-    // Replacing the plugins array in plugin-config
-    const originalPlugins = [...pluginConfig.plugins];
-    (pluginConfig.plugins as any).splice(
-      0,
-      pluginConfig.plugins.length,
-      ...mockPlugins,
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'check-plugin-test-'));
+    origCwd = process.cwd();
+    process.chdir(tmpDir);
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    process.chdir(origCwd);
+    logSpy.mockRestore();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const writeProperties = (platform: string) => {
+    fs.mkdirSync(path.join(tmpDir, platform), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, platform, 'sentry.properties'),
+      'defaults.org=test\n',
     );
+  };
 
-    const start = Date.now();
-    const result = await checkPlugins();
-    const end = Date.now();
-    const duration = end - start;
+  test('nothing is enabled without sentry.properties', async () => {
+    expect(await checkPlugins()).toEqual({ sentry: false, sourcemap: false });
+    expect(logSpy).not.toHaveBeenCalled();
+  });
 
-    console.log(`Duration with optimized implementation: ${duration}ms`);
+  for (const platform of ['ios', 'android']) {
+    test(`${platform}/sentry.properties enables sentry and source maps`, async () => {
+      writeProperties(platform);
+      expect(await checkPlugins()).toEqual({ sentry: true, sourcemap: true });
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      expect(logSpy).toHaveBeenCalledWith(
+        t('pluginDetected', { name: 'sentry' }),
+      );
+    });
+  }
 
-    expect(result).toEqual({
-      sentry: false, // default
-      sourcemap: false, // default
-      p1: true,
-      p2: true,
-      p3: true,
-    } as any);
+  test('both platforms enable sentry and source maps with one detection log', async () => {
+    writeProperties('ios');
+    writeProperties('android');
 
-    // Now it's concurrent, so we expect around 100ms.
-    // We'll allow some buffer, but it should definitely be less than 250ms.
-    expect(duration).toBeLessThan(250);
-
-    // Restore original plugins
-    (pluginConfig.plugins as any).splice(
-      0,
-      pluginConfig.plugins.length,
-      ...originalPlugins,
+    expect(await checkPlugins()).toEqual({ sentry: true, sourcemap: true });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy).toHaveBeenCalledWith(
+      t('pluginDetected', { name: 'sentry' }),
     );
   });
 });

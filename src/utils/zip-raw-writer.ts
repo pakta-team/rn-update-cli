@@ -1,7 +1,7 @@
 /**
  * [INPUT]: 依赖源 ZIP 中央目录、可读流、CRC/尺寸元数据与文件系统
  * [OUTPUT]: 对外提供 RawZipEntry、fitsRawZip、crc32Update 与 RawZipWriter
- * [POS]: CLI 归档快速重打包底座，原样复制已压缩条目，避免资源二次压缩
+ * [POS]: CLI 归档快速重打包底座，原样复制压缩条目并显式维护落盘偏移，避免重压缩与 WSL 首块覆盖
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
@@ -11,9 +11,10 @@
 // a second deflate of every asset (yazl can only add uncompressed data and
 // re-deflates it). Plain zip only: no zip64, no data descriptors, no extra
 // fields; callers must check `fitsRawZip` before choosing this writer.
-import fs from 'fs-extra';
+import fs from 'fs';
 import type { Readable } from 'stream';
 import type { Entry } from 'yauzl';
+import { remove } from './fs-helpers';
 
 const LOCAL_HEADER_SIGNATURE = 0x04034b50;
 const CENTRAL_HEADER_SIGNATURE = 0x02014b50;
@@ -86,7 +87,7 @@ export class RawZipWriter {
   private readonly closed: Promise<void>;
 
   constructor(readonly output: string) {
-    this.out = fs.createWriteStream(output);
+    this.out = fs.createWriteStream(output, { start: 0 });
     this.closed = new Promise<void>((resolve, reject) => {
       this.out.once('close', resolve);
       this.out.once('error', (error) => {
@@ -241,7 +242,7 @@ export class RawZipWriter {
   async abort(): Promise<void> {
     this.out.destroy();
     await this.closed.catch(() => {});
-    await fs.remove(this.output).catch(() => {});
+    await remove(this.output).catch(() => {});
   }
 
   private write(chunk: Buffer): Promise<void> {

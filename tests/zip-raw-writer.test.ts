@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 依赖 Bun 测试运行时与 ../src/utils/zip-entries、../src/utils/zip-raw-writer
+ * [OUTPUT]: 验证 ZIP 原始条目写入
+ * [POS]: tests 的行为回归边界，通过隔离夹具约束对应生产模块
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'fs';
 import os from 'os';

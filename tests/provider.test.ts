@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 依赖 Bun 测试运行时与 ../src/api、../src/bundle、../src/package、../src/provider、../src/versions
+ * [OUTPUT]: 验证 Provider API 映射
+ * [POS]: tests 的行为回归边界，通过隔离夹具约束对应生产模块
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import * as api from '../src/api';
 import { bundleCommands } from '../src/bundle';

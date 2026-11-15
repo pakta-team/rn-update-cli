@@ -1,10 +1,10 @@
 /**
- * [INPUT]: 依赖原生包解析器、对象上传 API、应用选择、channel 自动创建/断言与本地化文案
+ * [INPUT]: 依赖 node:fs 与 fs-helpers.remove 管理原生包临时目录，依赖原生包解析器、对象上传 API、应用选择、channel 自动创建/断言与本地化文案
  * [OUTPUT]: 对外提供三端原生包登记/列表/删除/解析命令，上传前执行版本组 JS 一致性与精确身份幂等检查
  * [POS]: CLI 原生构建边界，在上传字节前阻断同版本换 JS，并把合法精简制品、Range 与 buildTime 绑定到 NativeVersion
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
-import * as fs from 'fs-extra';
+import * as fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
@@ -32,12 +32,26 @@ import {
 } from './utils';
 import { pricingPageUrl, updateJson } from './utils/constants';
 import { getDepVersions } from './utils/dep-versions';
+import { remove } from './utils/fs-helpers';
 import { getCommitInfo } from './utils/git';
-import { bundleEntryMatcher, cachePut } from './utils/hermes-base';
+import {
+  bundleEntryMatcher,
+  cachePut,
+  reportedBytecodeVersion,
+} from './utils/hermes-base';
 import { isStandaloneService } from './utils/http-helper';
 import { t } from './utils/i18n';
 import { getStringListOption } from './utils/options';
 import { bundleLocationFields, locateZipEntry } from './utils/zip-range';
+
+// parse* 输出 JSON，便于把 bundleHash（内容指纹）管道给 jq；原始 bundle 字节剔除，
+// Buffer 预览只是噪声。
+function printPackageInfo({
+  bundleFile: _bundleFile,
+  ...info
+}: Record<string, unknown>) {
+  console.log(JSON.stringify(info, null, 2));
+}
 
 type PackageCommandOptions = Record<string, unknown> & {
   appId?: string;
@@ -84,10 +98,10 @@ type NativeUploadConfig = {
 };
 
 // the AAB parser drags in protobufjs; load it only for the aab commands
-function createAabParser(source: string) {
-  const { AabParser } =
-    require('./utils/app-info-parser/aab') as typeof import('./utils/app-info-parser/aab');
-  return new AabParser(source);
+function loadExtractApk() {
+  return (
+    require('./utils/app-info-parser/aab') as typeof import('./utils/app-info-parser/aab')
+  ).extractApk;
 }
 
 export function normalizeUploadBuildTime(value: unknown): string {
@@ -198,8 +212,7 @@ async function uploadNativePackage(
     bundleHash,
     channel: rawChannel = 'default',
   } = info;
-  // 与服务端 resolveChannel 的归一规则同构：渠道 code 一律小写比较。
-  const channel = String(rawChannel).trim().toLowerCase();
+  const channel = String(rawChannel).trim();
   const bundleFile = (info as { bundleFile?: Buffer }).bundleFile;
   const { appId: appIdInPkg, appKey: appKeyInPkg } = info;
   // where the expected app came from, for the mismatch messages
@@ -274,13 +287,13 @@ async function uploadNativePackage(
     }
   }
 
-  const tempRoot = await fs.mkdtemp(
+  const tempRoot = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), 'rnu-native-package-upload-'),
   );
   const slimPackagePath = path.join(tempRoot, `package${config.extension}`);
   try {
     await createSlimNativePackage(filePath, slimPackagePath, config.platform);
-    const uploaded = await uploadFile(slimPackagePath, undefined, appId);
+    const uploaded = await uploadFile(slimPackagePath, appId);
     const { hash } = uploaded;
     // where the bundle sits inside the uploaded (slim) archive, so a later
     // `bundle` that falls back to this package as hermes base fetches only
@@ -325,6 +338,10 @@ async function uploadNativePackage(
         // against the client-reported bundleHash to decide pdiff applicability.
         // Old servers strip unknown fields, so this is forward-compatible.
         ...(bundleHash ? { bundleHash } : {}),
+        // HBC 版本（0 = 纯 JS），服务端只会把匹配编译基线的包当作 Hermes base
+        ...(bundleFile
+          ? { bytecodeVersion: reportedBytecodeVersion(bundleFile) }
+          : {}),
         ...bundleLocation,
         deps: getDepVersions(),
         commit: await getCommitInfo(),
@@ -339,7 +356,7 @@ async function uploadNativePackage(
       }),
     );
   } finally {
-    await fs.remove(tempRoot);
+    await remove(tempRoot);
   }
 }
 
@@ -452,7 +469,7 @@ export const packageCommands = {
 
     // private temp dir: unpredictable path, safe against symlink squatting in
     // the shared tmpdir and against concurrent uploads of same-named AABs
-    const tempRoot = await fs.mkdtemp(
+    const tempRoot = await fs.promises.mkdtemp(
       path.join(os.tmpdir(), 'rnu-aab-upload-'),
     );
     const output = path.join(tempRoot, 'universal.apk');
@@ -460,9 +477,8 @@ export const packageCommands = {
     const includeAllSplits = parseBooleanOption(options.includeAllSplits);
     const splits = parseCsvOption(options.splits);
 
-    const parser = createAabParser(source);
     try {
-      await parser.extractApk(output, {
+      await loadExtractApk()(source, output, {
         includeAllSplits,
         splits,
       });
@@ -471,7 +487,7 @@ export const packageCommands = {
         options,
       });
     } finally {
-      await fs.remove(tempRoot);
+      await remove(tempRoot);
     }
   },
   uploadApp: async ({
@@ -497,28 +513,28 @@ export const packageCommands = {
     if (!fn?.endsWith('.app')) {
       throw new Error(t('usageParseApp'));
     }
-    console.log(await getAppInfo(fn));
+    printPackageInfo(await getAppInfo(fn));
   },
   parseIpa: async ({ args }: { args: string[] }) => {
     const fn = args[0];
     if (!fn?.endsWith('.ipa')) {
       throw new Error(t('usageParseIpa'));
     }
-    console.log(await getIpaInfo(fn));
+    printPackageInfo(await getIpaInfo(fn));
   },
   parseApk: async ({ args }: { args: string[] }) => {
     const fn = args[0];
     if (!fn?.endsWith('.apk')) {
       throw new Error(t('usageParseApk'));
     }
-    console.log(await getApkInfo(fn));
+    printPackageInfo(await getApkInfo(fn));
   },
   parseAab: async ({ args }: { args: string[] }) => {
     const fn = args[0];
     if (!fn?.endsWith('.aab')) {
       throw new Error(t('usageParseAab'));
     }
-    console.log(await getAabInfo(fn));
+    printPackageInfo(await getAabInfo(fn));
   },
   extractApk: async ({
     args,
@@ -539,8 +555,7 @@ export const packageCommands = {
     const includeAllSplits = parseBooleanOption(options.includeAllSplits);
     const splits = parseCsvOption(options.splits);
 
-    const parser = createAabParser(source);
-    await parser.extractApk(output, {
+    await loadExtractApk()(source, output, {
       includeAllSplits,
       splits,
     });

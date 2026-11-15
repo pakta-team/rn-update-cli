@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
-
 /**
- * [INPUT]: 依赖 Bun shell、Git tag、npm 发布环境与 package.json
- * [OUTPUT]: 对外提供 CLI 发布前版本写入和 dry-run 守门流程
- * [POS]: scripts 发版编排入口，只在包发布阶段修改版本元数据
+ * [INPUT]: 依赖 Bun shell、Git tag/PUBLISH_VERSION 与 package.json 文件读写
+ * [OUTPUT]: 提供发布前版本格式守门和 CLI package.json 版本写入；dry-run 仍更新本地版本
+ * [POS]: CLI 发布准备入口，只编排元数据，不执行上传或 npm 发布
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
-import { access, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { $ } from 'bun';
 
@@ -17,12 +16,6 @@ async function modifyPackageJson({
   version: string;
 }): Promise<void> {
   const packageJsonPath = path.join(__dirname, '..', 'package.json');
-
-  try {
-    await access(packageJsonPath);
-  } catch {
-    throw new Error(`package.json not found at ${packageJsonPath}`);
-  }
 
   console.log('Reading package.json...');
   const packageJsonContent = await readFile(packageJsonPath, 'utf-8');

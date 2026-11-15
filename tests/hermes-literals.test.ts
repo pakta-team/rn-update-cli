@@ -23,10 +23,12 @@ import {
 // Every hermesc found runs the real-build tests, so a checkout with both the
 // classic compiler (HBC 96) and hermes-compiler (HBC 98) covers both layouts.
 const HERMESC_CANDIDATES = [
-  '../../rn-update/node_modules/react-native/sdks/hermesc/linux64-bin/hermesc',
-  '../../rn-update/node_modules/react-native/sdks/hermesc/osx-bin/hermesc',
-  '../../rn-update/Example/testHotUpdate/node_modules/hermes-compiler/hermesc/osx-bin/hermesc',
-  '../../rn-update/.e2e-rn077-oldarch/AwesomeProject/node_modules/react-native/sdks/hermesc/osx-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/linux64-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/osx-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/win64-bin/hermesc.exe',
+  '../node_modules/hermes-compiler/hermesc/linux64-bin/hermesc',
+  '../node_modules/hermes-compiler/hermesc/osx-bin/hermesc',
+  '../node_modules/hermes-compiler/hermesc/win64-bin/hermesc.exe',
 ].map((p) => path.resolve(__dirname, p));
 const hermescs = (
   process.env.HERMESC

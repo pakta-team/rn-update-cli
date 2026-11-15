@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 依赖 testUrls、runtimeFetch 替身与可控响应时序
+ * [OUTPUT]: 验证空输入、成功优先、延迟并发探测、取消落败请求与全失败首地址回退
+ * [POS]: CLI 端点探测算法回归，只模拟传输而不访问真实服务或代理
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 
 const runtimeFetchMock = mock(() => Promise.resolve({ status: 200 }));
@@ -5,36 +11,7 @@ mock.module('../src/utils/runtime', () => ({
   runtimeFetch: runtimeFetchMock,
 }));
 
-import { promiseAny, testUrls } from '../src/utils/http-helper';
-
-describe('promiseAny', () => {
-  test('resolves with the first resolved promise', async () => {
-    const result = await promiseAny([
-      new Promise((_, reject) => setTimeout(() => reject('slow'), 50)),
-      Promise.resolve('fast'),
-      new Promise((resolve) => setTimeout(() => resolve('medium'), 30)),
-    ]);
-    expect(result).toBe('fast');
-  });
-
-  test('rejects when all promises reject', async () => {
-    await expect(
-      promiseAny([
-        Promise.reject(new Error('fail1')),
-        Promise.reject(new Error('fail2')),
-        Promise.reject(new Error('fail3')),
-      ]),
-    ).rejects.toThrow('All promises were rejected');
-  });
-
-  test('resolves with the first even if others fail', async () => {
-    const result = await promiseAny([
-      Promise.reject(new Error('fail')),
-      Promise.resolve('success'),
-    ]);
-    expect(result).toBe('success');
-  });
-});
+import { testUrls } from '../src/utils/http-helper';
 
 describe('testUrls', () => {
   test('returns null for empty array', async () => {

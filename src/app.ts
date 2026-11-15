@@ -80,6 +80,30 @@ function parseAppId(value: string): string {
   return String(id);
 }
 
+type UpdateInfo = Partial<
+  Record<Platform, { appId: number | string; appKey: string }>
+>;
+
+/** The parsed config file, or undefined when it does not exist. */
+async function readUpdateInfo(
+  configPath: string,
+): Promise<UpdateInfo | undefined> {
+  let raw: string;
+  try {
+    raw = await fs.promises.readFile(configPath, 'utf8');
+  } catch (e: any) {
+    if (e.code === 'ENOENT') {
+      return undefined;
+    }
+    throw e;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(t('failedToParseUpdateJson', { configPath }));
+  }
+}
+
 /** Read the selected app for a platform from the requested config file. */
 export async function getSelectedApp(
   platform: Platform,
@@ -87,27 +111,8 @@ export async function getSelectedApp(
 ): Promise<{ appId: string; appKey: string; platform: Platform }> {
   assertPlatform(platform);
 
-  const resolvedConfigPath = configPath || updateJson;
-  let raw: string;
-  try {
-    raw = await fs.promises.readFile(resolvedConfigPath, 'utf8');
-  } catch (e: any) {
-    if (e.code === 'ENOENT') {
-      throw new AppNotSelectedError(platform);
-    }
-    throw e;
-  }
-  let updateInfo: Partial<
-    Record<Platform, { appId: string | number; appKey: string }>
-  >;
-  try {
-    updateInfo = JSON.parse(raw);
-  } catch {
-    throw new Error(
-      t('failedToParseUpdateJson', { configPath: resolvedConfigPath }),
-    );
-  }
-  const info = updateInfo[platform];
+  const updateInfo = await readUpdateInfo(configPath || updateJson);
+  const info = updateInfo?.[platform];
   if (!info) {
     throw new AppNotSelectedError(platform);
   }
@@ -119,23 +124,41 @@ export async function getSelectedApp(
 }
 
 /** Resolve a standalone channel and create it on first use when absent. */
+export function findChannel(
+  channels: ServiceChannel[],
+  code: string,
+): ServiceChannel | undefined {
+  const requestedCode = code.trim();
+  if (!requestedCode) throw new Error(t('channelCodeRequired'));
+  const exact = channels.filter((channel) => channel.code === requestedCode);
+  const matches = exact.length
+    ? exact
+    : channels.filter(
+        (channel) => channel.code.toLowerCase() === requestedCode.toLowerCase(),
+      );
+  if (matches.length > 1) {
+    throw new Error(t('channelAmbiguous', { channel: requestedCode }));
+  }
+  return matches[0];
+}
+
+export function assertChannelCreatable(code: string): void {
+  if (!code.trim()) throw new Error(t('channelCodeRequired'));
+  if (code.trim() !== code.trim().toLowerCase()) {
+    throw new Error(t('channelIdentityCannotCreate', { channel: code.trim() }));
+  }
+}
+
 export async function getOrCreateChannel(
   appId: string,
   code: string,
 ): Promise<ResolvedChannel> {
-  const normalizedCode = code.trim().toLowerCase();
-  if (!normalizedCode) {
-    throw new Error(t('channelCodeRequired'));
-  }
-  const findChannel = (channels: ServiceChannel[]) =>
-    channels.find(
-      (channel) => channel.code.trim().toLowerCase() === normalizedCode,
-    );
-
-  const existing = findChannel(await getChannels(appId));
+  const normalizedCode = code.trim();
+  const existing = findChannel(await getChannels(appId), normalizedCode);
   if (existing) {
     return { channel: existing, created: false };
   }
+  assertChannelCreatable(normalizedCode);
 
   try {
     return {
@@ -143,15 +166,15 @@ export async function getOrCreateChannel(
       created: true,
     };
   } catch (error) {
-    // Two CLI processes may race to create the same channel. Re-read before
-    // surfacing the original failure so the loser remains idempotent.
+    let channels: ServiceChannel[];
     try {
-      const concurrent = findChannel(await getChannels(appId));
-      if (concurrent) {
-        return { channel: concurrent, created: false };
-      }
+      channels = await getChannels(appId);
     } catch {
-      // Preserve the original create error when the recovery lookup fails.
+      throw error;
+    }
+    const concurrent = findChannel(channels, normalizedCode);
+    if (concurrent) {
+      return { channel: concurrent, created: false };
     }
     throw error;
   }
@@ -272,20 +295,10 @@ async function selectApp({
   const appKey = app.appKey;
 
   const configPath = options.config || updateJson;
-  let updateInfo: Partial<
-    Record<Platform, { appId: string | number; appKey: string }>
-  > = {};
-  try {
-    updateInfo = JSON.parse(await fs.promises.readFile(configPath, 'utf8'));
-  } catch (e: any) {
-    if (e.code !== 'ENOENT') {
-      console.error(t('failedToParseUpdateJson', { configPath }));
-      throw e;
-    }
-  }
+  const updateInfo = (await readUpdateInfo(configPath)) ?? {};
   updateInfo[platform] = {
     // 遗留服务沿用数字 appId 的历史契约；独立服务才可能写入 UUID。
-    appId: /^[1-9]\d*$/.test(String(id)) ? Number(id) : id,
+    appId: /^[1-9]\d*$/.test(String(id)) ? Number(id) : String(id),
     appKey,
   };
   await fs.promises.writeFile(

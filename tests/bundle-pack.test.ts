@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 依赖 packBundle、临时文件系统与 yauzl 条目读取
+ * [OUTPUT]: 提供 PPK 条目、压缩策略及输出写失败的回归
+ * [POS]: CLI 制品打包边界测试，验证源文件筛选与归档写入失败及时传播
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'fs';
 import os from 'os';
@@ -109,6 +115,19 @@ describe('bundle-pack', () => {
     expect(compressionMethods['assets/bytecode.hbc']).toBe(8);
     expect(compressionMethods['assets/image-without-extension']).toBe(0);
     expect(compressionMethods['assets/hermes-misnamed.png']).toBe(8);
+  });
+
+  test('rejects instead of hanging when the output cannot be written', async () => {
+    const sourceDir = path.join(tempRoot, 'bundle');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, 'index.bundlejs'), 'bundle');
+    const output = path.join(tempRoot, 'out.ppk');
+    fs.mkdirSync(output);
+
+    await expect(packBundle(sourceDir, output)).rejects.toMatchObject({
+      code: 'EISDIR',
+    });
+    expect(fs.statSync(output).isDirectory()).toBe(true);
   });
 
   test('excludes sourcemap derived from a custom bundleName', async () => {

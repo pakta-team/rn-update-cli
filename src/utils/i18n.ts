@@ -38,8 +38,6 @@ i18next.init({
   lng: resolveLanguage(),
   fallbackLng: 'en',
   supportedLngs: ['en', 'zh'],
-  // debug: process.env.NODE_ENV !== 'production',
-  // debug: true,
   resources: {
     en: {
       translation: en,

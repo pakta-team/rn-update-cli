@@ -18,7 +18,7 @@
 import { readFile } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn } from 'child_process';
-import { pickLayout, resolveHbcSections } from './hbcTransform';
+import { resolveHbcSections } from './hbcTransform';
 import { type LiteralBuffers, LiteralResolver } from './hermes-literals';
 
 export class UnverifiableHermesBytecode extends Error {}
@@ -65,7 +65,11 @@ export interface HermesSemanticData {
 export async function readHermesSemanticData(
   file: string,
 ): Promise<HermesSemanticData> {
-  const bytes = await readFile(file);
+  return hermesSemanticData(await readFile(file));
+}
+
+/** {@link readHermesSemanticData} for HBC bytes already in memory. */
+export function hermesSemanticData(bytes: Buffer): HermesSemanticData {
   const resolved = requireValue(
     resolveHbcSections(bytes, bytes.length),
     'unsupported or unreadable HBC layout',
@@ -75,12 +79,13 @@ export async function readHermesSemanticData(
   if (
     !(
       (resolved.version >= 87 && resolved.version <= 96) ||
-      resolved.version === 98
+      resolved.version === 98 ||
+      resolved.version === 99
     )
   ) {
     throw new UnverifiableHermesBytecode('unsupported semantic HBC version');
   }
-  const layout = requireValue(pickLayout(bytes), 'unknown HBC layout');
+  const { layout } = resolved;
   const section = (name: string) => {
     const r = requireValue(resolved.sections.get(name), `missing ${name}`);
     return checkedSlice(bytes, r.start, r.size);
@@ -112,7 +117,11 @@ export async function readHermesSemanticData(
   // hbcTransform's file-header variants do not distinguish that function
   // schema change. A compiler upgrade needs independent large/small fixtures;
   // do not infer either schema from numStringSwitchImms or HBC version alone.
-  const shaped = resolved.version === 98;
+  // Audited v99 function schema: hermes-compiler 260318099.0.4 (RN 0.88), the
+  // first HBC bump after that removal, so it always has the 36-byte form.
+  const shaped = resolved.version >= 98;
+  const noCacheNewObject = resolved.version === 99;
+  const largeSize = noCacheNewObject ? 36 : 37;
   const entrySize = shaped ? 12 : 16;
   const headers = section('functionHeaders');
   const functions: FunctionData[] = [];
@@ -129,15 +138,17 @@ export async function readHermesSemanticData(
       const largeOffset = shaped
         ? ((word1 >>> 14) & 0xff) * 0x1000000 + offset
         : (headers.readUInt32LE(at + 8) & 0x1ffffff) * 0x10000 + offset;
-      const large = checkedSlice(bytes, largeOffset, shaped ? 37 : 31);
+      const large = checkedSlice(bytes, largeOffset, shaped ? largeSize : 31);
       offset = large.readUInt32LE(0);
       size = large.readUInt32LE(shaped ? 12 : 8);
       name = large.readUInt32LE(shaped ? 16 : 12);
-      flags = large[shaped ? 36 : 30];
+      flags = large[shaped ? largeSize - 1 : 30];
       fields = shaped
         ? [4, 8, 20, 24, 28].map((p) => large.readUInt32LE(p))
         : [4, 20, 24].map((p) => large.readUInt32LE(p));
-      fields.push(...large.subarray(shaped ? 32 : 28, shaped ? 36 : 30));
+      fields.push(
+        ...large.subarray(shaped ? 32 : 28, shaped ? largeSize - 1 : 30),
+      );
     } else if (shaped) {
       size = word1 & 0x3fff;
       name = (word1 >>> 14) & 0xff;
@@ -148,9 +159,13 @@ export async function readHermesSemanticData(
         word1 >>> 27,
         headers[at + 8],
         headers[at + 9],
-        headers[at + 10] & 63,
-        (headers[at + 10] >>> 6) & 1,
-        headers[at + 10] >>> 7,
+        ...(noCacheNewObject
+          ? [headers[at + 10] & 127, headers[at + 10] >>> 7]
+          : [
+              headers[at + 10] & 63,
+              (headers[at + 10] >>> 6) & 1,
+              headers[at + 10] >>> 7,
+            ]),
       ];
     } else {
       size = word1 & 0x7fff;
@@ -267,8 +282,19 @@ interface RawInstruction {
 }
 
 /** Remove encoding-width suffixes; operand values remain part of the audit. */
-function foldWidth(opcode: string): string {
-  return opcode.replace(/(?:LongIndex|Long|Short)$/, '');
+/** The opcode without its operand-width suffix (`GetByIdLong` → `GetById`). */
+export function foldWidthSuffix(opcode: string): string {
+  for (const suffix of ['LongIndex', 'Long', 'Short']) {
+    if (opcode.length > suffix.length && opcode.endsWith(suffix)) {
+      return opcode.slice(0, -suffix.length);
+    }
+  }
+  return opcode;
+}
+
+/** The first line of a function in either dump. */
+export function isFunctionHeader(line: string): boolean {
+  return /^(?:Function|NCFunction|Constructor)</.test(line);
 }
 
 /**
@@ -374,7 +400,7 @@ export function normalizeRawHermesFunction(
   const literal = new LiteralResolver(buffers, data.strings);
   const output = [fn.metadata];
   for (const inst of instructions) {
-    const op = foldWidth(inst.opcode);
+    const op = foldWidthSuffix(inst.opcode);
     const values = inst.operands.map((o) => o.value);
     const refs = STRING_OPERANDS[op] ?? [];
     const operands: unknown[] = inst.operands.map((operand, i) => {
@@ -442,6 +468,9 @@ export function normalizeRawHermesFunction(
           'undecodable shape values',
         );
       }
+    } else if (op === 'NewTypedObjectWithBuffer') {
+      // HBC v99 typed-mode buffer user; its literal operands are not decoded.
+      throw new UnverifiableHermesBytecode('typed object literal buffer');
     } else if (op === 'CacheNewObject') {
       if (buffers.layout !== 'shaped' || values.length !== 4) {
         throw new UnverifiableHermesBytecode('unknown cached object operands');
@@ -554,38 +583,22 @@ export async function auditRawHermesBytecode(
   const functions = async function* (side: number): AsyncGenerator<string[]> {
     let lines: string[] | null = null;
     let index = 0;
+    const normalize = (body: string[]) =>
+      normalizeRawHermesFunction(body, data[side], index++, buffers[side]);
     for await (const line of linesOf(children[side].stdout!)) {
-      if (/^(?:Function|NCFunction|Constructor)</.test(line)) {
-        if (lines)
-          yield normalizeRawHermesFunction(
-            lines,
-            data[side],
-            index++,
-            buffers[side],
-          );
+      if (isFunctionHeader(line)) {
+        if (lines) yield normalize(lines);
         lines = [];
       } else if (
         /^(?:RegExp Bytecodes:|Debug |Textified callees table)/.test(line)
       ) {
-        if (lines)
-          yield normalizeRawHermesFunction(
-            lines,
-            data[side],
-            index++,
-            buffers[side],
-          );
+        if (lines) yield normalize(lines);
         lines = null;
       } else if (lines) {
         lines.push(line);
       }
     }
-    if (lines)
-      yield normalizeRawHermesFunction(
-        lines,
-        data[side],
-        index++,
-        buffers[side],
-      );
+    if (lines) yield normalize(lines);
     const error = await exits[side];
     if (error)
       throw new UnverifiableHermesBytecode(

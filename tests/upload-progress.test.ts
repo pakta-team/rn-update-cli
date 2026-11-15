@@ -1,13 +1,14 @@
 /**
- * [INPUT]: 依赖 standalone multipart 管理 API、预签名对象存储 PUT 与本地文件流
+ * [INPUT]: 依赖 standalone multipart 管理 API、共享有界 PUT 传输与本地文件流
  * [OUTPUT]: 验证 standalone 上传使用流式请求体，并按真实读取字节推进进度条
  * [POS]: API 传输边界的回归测试，锁定旧 CLI 上传体验在独立服务路径上的兼容性
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
-import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import * as transport from '../src/utils/upload-request';
 
 type ProgressRecord = {
   total: number;
@@ -76,7 +77,7 @@ const runtimeFetchMock = mock(
   },
 );
 
-const nodeFetchMock = mock(async (_url: string, options: FetchOptions = {}) => {
+const uploadMock = mock(async (_url: string, options: FetchOptions = {}) => {
   const body = options.body;
   if (!body || typeof (body as { on?: unknown }).on !== 'function') {
     throw new Error('standalone multipart upload must use a stream body');
@@ -95,15 +96,14 @@ const nodeFetchMock = mock(async (_url: string, options: FetchOptions = {}) => {
   uploadedBody = Buffer.concat(chunks);
 
   return {
-    ok: true,
     status: 200,
-    headers: { get: (name: string) => (name === 'etag' ? 'etag-1' : null) },
+    statusText: 'OK',
+    eTag: 'etag-1',
   };
 });
 
 // Mock before importing api.ts: its upload dependencies are loaded lazily.
 mock.module('progress', () => ({ default: TestProgressBar }));
-mock.module('node-fetch', () => ({ default: nodeFetchMock }));
 mock.module('../src/utils/http-helper', () => ({
   getBaseUrl: async () => 'http://standalone.test',
   isStandaloneService: () => true,
@@ -132,6 +132,9 @@ describe('standalone multipart upload progress', () => {
   });
 
   test('streams each part and advances one aggregate progress bar by bytes read', async () => {
+    const upload = spyOn(transport, 'sendUploadRequest').mockImplementation(
+      uploadMock,
+    );
     const expectedBody = Buffer.alloc(256 * 1024, 0x5a);
     temporaryFile = path.join(
       os.tmpdir(),
@@ -139,7 +142,12 @@ describe('standalone multipart upload progress', () => {
     );
     fs.writeFileSync(temporaryFile, expectedBody);
 
-    const result = await uploadFile(temporaryFile, undefined, 'app-1');
+    let result: Awaited<ReturnType<typeof uploadFile>>;
+    try {
+      result = await uploadFile(temporaryFile, 'app-1');
+    } finally {
+      upload.mockRestore();
+    }
 
     expect(result).toEqual({
       hash: 'object-key',

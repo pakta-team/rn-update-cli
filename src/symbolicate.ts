@@ -9,11 +9,11 @@ import fs from 'fs';
 import { SourceMapConsumer } from 'source-map';
 import { get } from './api';
 import { getPlatform, getSelectedApp } from './app';
-import type { Platform, Version } from './types';
+import type { Platform } from './types';
 import { t } from './utils/i18n';
 import { webFetch } from './utils/runtime';
 import { unpackSourceMap } from './utils/slim-sourcemap';
-import { fetchVersions } from './versions';
+import { findVersion } from './versions';
 
 // A frame location inside a shipped bundle: `<bundle>:<line>:<column>`. Covers
 // `index.bundlejs`, `index.android.bundle`, `main.jsbundle`, `bundle.harmony.js`
@@ -70,25 +70,6 @@ export function symbolicateStack(
   return { text, mapped };
 }
 
-async function findVersionByHash(
-  appId: string,
-  hash: string,
-): Promise<Version | undefined> {
-  const limit = 100;
-  // The list is newest-first; crashes are usually about recent versions.
-  for (let offset = 0; offset < 100 * limit; offset += limit) {
-    const page = await fetchVersions(appId, offset, limit);
-    const found = page.find((version) => version.hash === hash);
-    if (found) {
-      return found;
-    }
-    if (page.length < limit) {
-      return undefined;
-    }
-  }
-  return undefined;
-}
-
 async function readStack(source: string | undefined): Promise<string> {
   if (!source || source === '-') {
     // No file and an interactive terminal: nothing is piped in, so waiting on
@@ -135,7 +116,7 @@ export const symbolicateCommands = {
 
     let versionId = versionIdOption;
     if (!versionId) {
-      const version = await findVersionByHash(appId, hash);
+      const version = await findVersion(appId, (item) => item.hash === hash);
       if (!version) {
         throw new Error(t('symbolicateVersionNotFound', { hash }));
       }

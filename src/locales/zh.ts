@@ -255,6 +255,10 @@ export default {
   channelAssertionFailed:
     '渠道断言失败：安装包内为 {{channel}}，而 --channel 为 {{requestedChannel}}。--channel 不会覆盖包内渠道。',
   channelCodeRequired: '渠道 code 不能为空。',
+  channelAmbiguous:
+    '渠道 {{channel}} 匹配多个已登记身份，请指定精确 code 或 channelId。',
+  channelIdentityCannotCreate:
+    '无法保留渠道 {{channel}} 的身份自动创建：服务端只创建小写 code，请明确登记所需身份。',
   channelHasNoNativePackages: '渠道 {{channel}} 下没有可绑定的原生包。',
   channelNotRegistered: '渠道 {{channel}} 尚未在应用中登记。',
   channelCreated: '已创建渠道 {{channel}}。',

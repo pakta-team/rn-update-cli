@@ -8,9 +8,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import fs from 'fs-extra';
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { removeSync } from '../src/utils/fs-helpers';
 import {
   compareHermesBytecode,
   probeHbcVersion,
@@ -42,7 +43,7 @@ describe.if(hasHermesc)('lossless Hermes operand audit (real compiler)', () => {
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rnu-hermes-raw-'));
   });
-  afterEach(() => fs.removeSync(dir));
+  afterEach(() => removeSync(dir));
 
   const compile = (
     name: string,
@@ -136,7 +137,7 @@ describe.if(hasHermesc)('lossless Hermes operand audit (real compiler)', () => {
     );
   });
 
-  test.skipIf(!hasHermesc || probeHbcVersion(hermesc!) === 98)(
+  test.skipIf(!hasHermesc || probeHbcVersion(hermesc!) >= 98)(
     'classic global lexical declarations resolve restricted-property string IDs',
     async () => {
       const base = compile('lexical-base', 'print("old-base-string");');

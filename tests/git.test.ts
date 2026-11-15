@@ -1,9 +1,15 @@
+/**
+ * [INPUT]: 依赖 getCommitInfo、真实 git 子进程与临时仓库/提交身份
+ * [OUTPUT]: 验证非仓库返回空值及真实提交/remote 元数据读取
+ * [POS]: CLI 发布元数据的本地 Git 进程边界回归，不连接远程仓库
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { getCommitInfo, getCurrentCommit } from '../src/utils/git';
+import { getCommitInfo } from '../src/utils/git';
 
 const originalCwd = process.cwd();
 
@@ -32,13 +38,6 @@ describe('utils/git', () => {
     tempRoot = '';
   });
 
-  test('throws for current commit outside of a git repository', () => {
-    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rn-update-no-git-'));
-    process.chdir(tempRoot);
-
-    expect(() => getCurrentCommit()).toThrow('Not a git repository');
-  });
-
   test('returns undefined commit info outside of a git repository', async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rn-update-no-git-'));
     process.chdir(tempRoot);
@@ -46,7 +45,7 @@ describe('utils/git', () => {
     await expect(getCommitInfo()).resolves.toBeUndefined();
   });
 
-  test('reads current commit and commit info using git executable', async () => {
+  test('reads commit info using git executable', async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rn-update-git-'));
     runGit(['init'], tempRoot);
     runGit(
@@ -58,11 +57,9 @@ describe('utils/git', () => {
     runGit(['commit', '-m', 'Initial commit'], tempRoot);
     process.chdir(tempRoot);
 
-    const currentCommit = getCurrentCommit();
     const commit = await getCommitInfo();
 
-    expect(currentCommit).toMatch(/^[0-9a-f]{40}$/);
-    expect(commit?.hash).toBe(currentCommit);
+    expect(commit?.hash).toMatch(/^[0-9a-f]{40}$/);
     expect(commit?.message).toBe('Initial commit');
     expect(commit?.author).toBe('Test Author');
     expect(commit?.timestamp).toMatch(/^\d+$/);

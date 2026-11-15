@@ -1,10 +1,15 @@
+/**
+ * [INPUT]: 依赖 options 的布尔、字符串、可选值和列表读取原语
+ * [OUTPUT]: 验证原始类型转换、缺省值、空值过滤及重复/逗号列表展开
+ * [POS]: CLI 参数归一化的纯函数边界，不承担命令白名单或业务校验
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { describe, expect, test } from 'bun:test';
 import {
   getBooleanOption,
   getOptionalStringOption,
   getStringListOption,
   getStringOption,
-  toObjectState,
 } from '../src/utils/options';
 
 describe('utils/options', () => {
@@ -19,7 +24,7 @@ describe('utils/options', () => {
   });
 
   test('getStringOption returns stringified primitive or fallback', () => {
-    expect(getStringOption({ name: 'pakta' }, 'name', 'default')).toBe('pakta');
+    expect(getStringOption({ name: 'pushy' }, 'name', 'default')).toBe('pushy');
     expect(getStringOption({ name: 100 }, 'name', 'default')).toBe('100');
     expect(getStringOption({ name: false }, 'name', 'default')).toBe('false');
     expect(getStringOption({ name: null }, 'name', 'default')).toBe('default');
@@ -48,14 +53,5 @@ describe('utils/options', () => {
     expect(getStringListOption({ ids: 10 }, 'ids')).toEqual(['10']);
     expect(getStringListOption({ ids: '' }, 'ids')).toBeUndefined();
     expect(getStringListOption({}, 'ids')).toBeUndefined();
-  });
-
-  test('toObjectState returns object value or fallback', () => {
-    const fallback = { ok: true };
-    const source = { name: 'app' };
-
-    expect(toObjectState(source, fallback)).toEqual(source);
-    expect(toObjectState(null, fallback)).toEqual(fallback);
-    expect(toObjectState('invalid', fallback)).toEqual(fallback);
   });
 });

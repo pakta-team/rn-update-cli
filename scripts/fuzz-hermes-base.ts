@@ -63,9 +63,12 @@ const OUT_DIR =
   argValue('out') ?? fs.mkdtempSync(path.join(os.tmpdir(), 'rnu-fuzz-hermes-'));
 
 const HERMESC_CANDIDATES = [
-  '../../rn-update/node_modules/react-native/sdks/hermesc/linux64-bin/hermesc',
-  '../../rn-update/node_modules/react-native/sdks/hermesc/osx-bin/hermesc',
-  '../../rn-update/Example/testHotUpdate/node_modules/hermes-compiler/hermesc/osx-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/linux64-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/osx-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/win64-bin/hermesc.exe',
+  '../node_modules/hermes-compiler/hermesc/linux64-bin/hermesc',
+  '../node_modules/hermes-compiler/hermesc/osx-bin/hermesc',
+  '../node_modules/hermes-compiler/hermesc/win64-bin/hermesc.exe',
 ].map((p) => path.resolve(__dirname, p));
 const hermesc =
   process.env.HERMESC || HERMESC_CANDIDATES.find((p) => fs.existsSync(p));

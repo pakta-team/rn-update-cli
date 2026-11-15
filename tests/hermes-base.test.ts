@@ -10,6 +10,7 @@ import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
 import { ZipFile } from 'yazl';
+import { sha256Hex } from '../src/utils/hash';
 import {
   cacheDir,
   cacheLookup,
@@ -26,26 +27,21 @@ import {
   normalizeDisassemblyLine,
   probeHbcVersion,
   resolveHermesBase,
-  sha256Hex,
   tmpDir,
   truncateHermesBaseDetail,
   verifyHermesBaseEquivalence,
 } from '../src/utils/hermes-base';
 import { locateZipEntry } from '../src/utils/zip-range';
 
-// A real hermesc: `HERMESC=/path/to/hermesc bun test`, or one from the SDK
-// repo's Example app next to this checkout; the compile-dependent tests are
-// skipped otherwise.
+// -- 显式 HERMESC 优先；缺省只发现本仓库依赖，缺少编译器则跳过编译场景 --
 const HERMESC_CANDIDATES = [
-  path.resolve(
-    __dirname,
-    '../../rn-update/Example/testHotUpdate/node_modules/hermes-compiler/hermesc/osx-bin/hermesc',
-  ),
-  path.resolve(
-    __dirname,
-    '../../rn-update/.e2e-rn077-oldarch/AwesomeProject/node_modules/react-native/sdks/hermesc/osx-bin/hermesc',
-  ),
-];
+  '../node_modules/react-native/sdks/hermesc/linux64-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/osx-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/win64-bin/hermesc.exe',
+  '../node_modules/hermes-compiler/hermesc/linux64-bin/hermesc',
+  '../node_modules/hermes-compiler/hermesc/osx-bin/hermesc',
+  '../node_modules/hermes-compiler/hermesc/win64-bin/hermesc.exe',
+].map((p) => path.resolve(__dirname, p));
 const hermesc =
   process.env.HERMESC || HERMESC_CANDIDATES.find((p) => fs.existsSync(p));
 const hasHermesc = Boolean(hermesc) && fs.existsSync(hermesc!);
@@ -848,11 +844,11 @@ describe('publish metadata never sends JSON null', () => {
       });
       expect(used.hermesBaseOutcome).toBe('used');
       expect('hermesBaseDetail' in used).toBe(false);
-      // plain JS bundle: no bytecodeVersion at all rather than null
+      // 纯 JS bundle：上报 0（plain JS），绝不发送 null
       const js = path.join(dir, 'js.ppk');
       await writeZip(js, { 'index.bundlejs': Buffer.from('var a = 1;') });
       const plain = await describePpkBundleForTests(js, undefined);
-      expect('bytecodeVersion' in plain).toBe(false);
+      expect(plain.bytecodeVersion).toBe(0);
     } finally {
       fs.removeSync(dir);
     }

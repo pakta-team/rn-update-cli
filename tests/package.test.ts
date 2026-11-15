@@ -1,6 +1,6 @@
 /**
  * [INPUT]: 依赖 packageCommands、原生包解析/ZIP 工具、可替换 CLI API 与英文 locale 固定器
- * [OUTPUT]: 验证 buildTime、包体选择/删除、精简上传、standalone 幂等短路与同版本换 JS 拒绝契约
+ * [OUTPUT]: 验证 buildTime 原样字符串化、parse JSON 剔除 bundle 字节、包体选择/删除、精简上传与 standalone 版本组裁决契约
  * [POS]: CLI package 命令回归边界，锁定上传前版本组裁决到 multipart/NativeVersion 的完整数据流
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
@@ -44,6 +44,17 @@ describe('normalizeUploadBuildTime', () => {
 
   test('keeps string as-is', () => {
     expect(normalizeUploadBuildTime('1234567890')).toBe('1234567890');
+    expect(normalizeUploadBuildTime('  1234567890  ')).toBe('  1234567890  ');
+    expect(normalizeUploadBuildTime(' \t\n ')).toBe(' \t\n ');
+    expect(normalizeUploadBuildTime('')).toBe('');
+  });
+
+  test('converts non-finite numbers to strings', () => {
+    expect(normalizeUploadBuildTime(Number.NaN)).toBe('NaN');
+    expect(normalizeUploadBuildTime(Number.POSITIVE_INFINITY)).toBe('Infinity');
+    expect(normalizeUploadBuildTime(Number.NEGATIVE_INFINITY)).toBe(
+      '-Infinity',
+    );
   });
 
   test('converts undefined to string', () => {
@@ -155,6 +166,54 @@ describe('package helper logic', () => {
   test('ensureFileByExt rejects empty string', () => {
     expect(() => ensureFileByExt('', '.apk')).toThrow();
   });
+});
+
+describe('packageCommands parse JSON', () => {
+  let consoleSpy: ReturnType<typeof spyOn>;
+  let infoSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+    infoSpy?.mockRestore();
+  });
+
+  for (const [command, parser, filePath] of [
+    ['parseApp', 'getAppInfo', 'release.app'],
+    ['parseApk', 'getApkInfo', 'release.apk'],
+    ['parseIpa', 'getIpaInfo', 'release.ipa'],
+    ['parseAab', 'getAabInfo', 'release.aab'],
+  ] as const) {
+    test(`${command} prints metadata JSON without bundle bytes`, async () => {
+      const metadata = {
+        versionName: '1.0.0',
+        buildTime: '  opaque-build  ',
+        bundleHash: 'a'.repeat(64),
+        channel: 'production',
+        appId: '100',
+        appKey: 'test-app-key',
+      };
+      infoSpy = spyOn(utils, parser).mockResolvedValue({
+        ...metadata,
+        bundleFile: Buffer.from('private-bundle-bytes'),
+      });
+
+      await packageCommands[command]({ args: [filePath] });
+
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      expect(infoSpy).toHaveBeenCalledWith(filePath);
+      expect(consoleSpy).toHaveBeenCalledTimes(1);
+      const [output] = consoleSpy.mock.calls[0];
+      expect(typeof output).toBe('string');
+      const parsed = JSON.parse(output);
+      expect(parsed).toEqual(metadata);
+      expect(parsed).not.toHaveProperty('bundleFile');
+      expect(output).not.toContain('private-bundle-bytes');
+    });
+  }
 });
 
 describe('packageCommands.deletePackage', () => {
@@ -378,6 +437,72 @@ describe('packageCommands native upload', () => {
     );
   });
 
+  test.each(['Beta', 'beta'])(
+    'preserves package %s and requires an exact --channel assertion',
+    async (channel) => {
+      const source = path.join(tempRoot, 'source.apk');
+      await createZip(source, { 'assets/index.android.bundle': 'bundle' });
+      infoSpy.mockResolvedValue({
+        versionName: '1.0',
+        buildTime: 'build',
+        channel,
+      });
+      uploadSpy = spyOn(api, 'uploadFile').mockResolvedValue({ hash: 'hash' });
+      await packageCommands.uploadApk({
+        args: [source],
+        options: { appId: '100', channel },
+      });
+      expect(postSpy).toHaveBeenCalledWith(
+        '/app/100/package/create',
+        expect.objectContaining({ channel }),
+      );
+      postSpy.mockClear();
+      uploadSpy.mockClear();
+      await expect(
+        packageCommands.uploadApk({
+          args: [source],
+          options: {
+            appId: '100',
+            channel: channel === 'Beta' ? 'beta' : 'Beta',
+          },
+        }),
+      ).rejects.toThrow();
+      expect(postSpy).not.toHaveBeenCalled();
+      expect(uploadSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  test('ambiguous package channel fails before any standalone writes', async () => {
+    process.env.RNU_SERVICE_URL = 'https://updates.example';
+    const source = path.join(tempRoot, 'source.apk');
+    await createZip(source, { 'assets/index.android.bundle': 'bundle' });
+    infoSpy.mockResolvedValue({
+      versionName: '1.0',
+      buildTime: 'build',
+      bundleHash: 'a'.repeat(64),
+      channel: 'BETA',
+    });
+    channelsSpy = spyOn(api, 'getChannels').mockResolvedValue([
+      { id: 'upper', code: 'Beta', name: 'Beta' },
+      { id: 'lower', code: 'beta', name: 'beta' },
+    ]);
+    createChannelSpy = spyOn(api, 'createChannel').mockResolvedValue({
+      id: 'unused',
+      code: 'beta',
+      name: 'beta',
+    });
+    uploadSpy = spyOn(api, 'uploadFile').mockResolvedValue({ hash: 'unused' });
+    await expect(
+      packageCommands.uploadApk({
+        args: [source],
+        options: { appId: '100', channel: 'BETA' },
+      }),
+    ).rejects.toThrow();
+    expect(createChannelSpy).not.toHaveBeenCalled();
+    expect(postSpy).not.toHaveBeenCalled();
+    expect(uploadSpy).not.toHaveBeenCalled();
+  });
+
   test('creates a missing standalone channel before uploading', async () => {
     process.env.RNU_SERVICE_URL = 'https://updates.example';
     const appId = '11111111-1111-4111-8111-111111111111';
@@ -416,6 +541,55 @@ describe('packageCommands native upload', () => {
       expect.objectContaining({ channelId, packageVersion: '2.0.0' }),
     );
   });
+
+  test.each([
+    ['Beta', ['Beta', 'beta'], 'Beta'],
+    ['beta', ['Beta', 'beta'], 'beta'],
+    ['BETA', ['Beta'], 'Beta'],
+    ['Beta', ['beta'], 'beta'],
+  ] as const)(
+    'resolves standalone package %s before duplicate short-circuit',
+    async (code, registered, expected) => {
+      process.env.RNU_SERVICE_URL = 'https://updates.example';
+      const source = path.join(tempRoot, 'source.apk');
+      await createZip(source, { 'assets/index.android.bundle': 'bundle' });
+      infoSpy.mockResolvedValue({
+        versionName: '1.0',
+        buildTime: 'build',
+        bundleHash: 'a'.repeat(64),
+        channel: code,
+      });
+      channelsSpy = spyOn(api, 'getChannels').mockResolvedValue(
+        registered.map((channel) => ({
+          id: channel,
+          code: channel,
+          name: channel,
+        })),
+      );
+      packagesSpy = spyOn(api, 'getAllPackages').mockResolvedValue([
+        {
+          id: 'duplicate',
+          name: '1.0',
+          channelId: expected,
+          buildTime: 'build',
+          bundleHash: 'a'.repeat(64),
+        },
+      ]);
+      createChannelSpy = spyOn(api, 'createChannel').mockRejectedValue(
+        new Error('unexpected creation'),
+      );
+      uploadSpy = spyOn(api, 'uploadFile').mockRejectedValue(
+        new Error('unexpected upload'),
+      );
+      await packageCommands.uploadApk({
+        args: [source],
+        options: { appId: '100', channel: code },
+      });
+      expect(createChannelSpy).not.toHaveBeenCalled();
+      expect(uploadSpy).not.toHaveBeenCalled();
+      expect(postSpy).not.toHaveBeenCalled();
+    },
+  );
 
   test('skips an exact standalone native identity before uploading bytes', async () => {
     process.env.RNU_SERVICE_URL = 'https://updates.example';

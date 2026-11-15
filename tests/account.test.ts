@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 依赖 Bun 测试运行时与 ../src/account、../src/api
+ * [OUTPUT]: 验证 缓存账号即时展示、后台刷新去重与失败隔离、凭据散列隔离和本地时钟续费窗口边界
+ * [POS]: tests 的行为回归边界，通过隔离夹具约束对应生产模块
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test';
 import * as childProcess from 'child_process';
 import { EventEmitter } from 'events';

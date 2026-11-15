@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 依赖 Bun 测试运行时与 ../src/bundle、../src/utils/constants
+ * [OUTPUT]: 验证 bundle 参数归一化
+ * [POS]: tests 的行为回归边界，通过隔离夹具约束对应生产模块
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { describe, expect, test } from 'bun:test';
 import { bundleCommands, normalizeBundleOptions } from '../src/bundle';
 import { tempDir } from '../src/utils/constants';

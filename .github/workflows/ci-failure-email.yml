@@ -1,3 +1,7 @@
+# [INPUT]: 依赖 ci/发布工作流完成事件、GitHub CLI 与仓库 issue 权限
+# [OUTPUT]: 常规分支失败时创建或更新诊断 issue，成功后关闭；验证分支不发送通知
+# [POS]: 独立公开 CLI 的通知边界，工作流名称与 test/publish 保持一致，不提及上游个人账号
+# [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 name: CI Failure Issue
 
 on:
@@ -9,7 +13,7 @@ on:
 
 jobs:
   notify:
-    if: contains(fromJSON('["failure","timed_out","action_required"]'), github.event.workflow_run.conclusion)
+    if: contains(fromJSON('["failure","timed_out","action_required"]'), github.event.workflow_run.conclusion) && !startsWith(github.event.workflow_run.head_branch, 'codex/verify-')
     permissions:
       issues: write
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -29,7 +33,7 @@ jobs:
           issue_title_prefix="[CI failed] $REPOSITORY / $WORKFLOW_NAME at "
           body_file="$(mktemp)"
           cat > "$body_file" <<EOF
-          @sunnylqm CI run failed.
+          CI run failed.
 
           Repository: $REPOSITORY
           Workflow: $WORKFLOW_NAME
@@ -68,7 +72,7 @@ jobs:
             --body-file "$body_file"
 
   close:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.conclusion == 'success' && !startsWith(github.event.workflow_run.head_branch, 'codex/verify-')
     permissions:
       issues: write
     runs-on: blacksmith-4vcpu-ubuntu-2404

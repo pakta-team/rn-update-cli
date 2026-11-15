@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 依赖 Bun 测试运行时与 ../src/utils/hbcTransform
+ * [OUTPUT]: 验证 Hermes 字节码转换
+ * [POS]: tests 的行为回归边界，通过隔离夹具约束对应生产模块
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { describe, expect, test } from 'bun:test';
 import fs from 'fs';
 import os from 'os';

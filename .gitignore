@@ -117,7 +117,6 @@ test_output.log
 .pakta.token
 
 # 内部 Agent 地图与本地自动化不得进入公开仓库。
-**/CLAUDE.md
 **/AGENTS.md
 **/.agents/
 **/.mcp.json

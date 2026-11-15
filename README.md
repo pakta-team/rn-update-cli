@@ -10,7 +10,7 @@
 
 Build and publish **over-the-air (OTA) updates** for **React Native, Expo and HarmonyOS**. Native build registration, staged rollouts, CI/CD and sourcemap archiving from your terminal.
 
-[简体中文](./README.zh-CN.md) · [Pakta](https://pakta.site/en/) · [Quick start](#quick-start) · [CLI guide](https://pakta.site/en/docs/cli/) · [SDK](https://github.com/pakta-team/rn-update#readme) · [Pricing](https://pakta.site/en/pricing/)
+[简体中文](./README.zh-CN.md) · [Pakta](https://pakta.site/en/) · [Quick start](#quick-start) · [CLI guide](https://pakta.site/en/docs/cli/) · [SDK](https://github.com/pakta-team/rn-update/tree/main/rn-update/README.md) · [Pricing](https://pakta.site/en/pricing/)
 
 ---
 
@@ -25,7 +25,7 @@ Build and publish **over-the-air (OTA) updates** for **React Native, Expo and Ha
 
 ## Quick start
 
-Requires **Node.js ≥18.17**, your platform build toolchain and native integration of the [rn-update SDK](https://github.com/pakta-team/rn-update#readme). Run these commands from your React Native project root.
+Requires **Node.js ≥18.17**, your platform build toolchain and native integration of the [rn-update SDK](https://github.com/pakta-team/rn-update/tree/main/rn-update/README.md). Run these commands from your React Native project root.
 
 ### 1. Install and select an app
 

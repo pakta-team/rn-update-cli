@@ -287,6 +287,24 @@ export async function fetchVersions(
   return Array.isArray(data) ? data : [];
 }
 
+/**
+ * 按谓词从最新版本向旧分页查找；崩溃与绑定通常发生在近期版本。
+ */
+export async function findVersion(
+  appId: string,
+  predicate: (version: Version) => boolean,
+): Promise<Version | undefined> {
+  const limit = 100;
+  for (let offset = 0; offset < 100 * limit; offset += limit) {
+    const page = await fetchVersions(appId, offset, limit);
+    const found = page.find(predicate);
+    if (found || page.length < limit) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
 async function showVersion(appId: string, offset: number) {
   const data = await fetchVersions(appId, offset, versionPageLimit);
   console.log(t('offset', { offset }));

@@ -21,13 +21,13 @@ import type { Package, Platform } from './types';
 import { isNonInteractive, question } from './utils';
 import { getDepVersions } from './utils/dep-versions';
 import { getCommitInfo } from './utils/git';
-import { getHbcVersion } from './utils/hbcTransform';
+import { sha256Hex } from './utils/hash';
 import {
   BUNDLE_ENTRY_NAMES,
   cachePut,
   extractBundleFromArchive,
   type HermesBaseMeta,
-  sha256Hex,
+  reportedBytecodeVersion,
   truncateHermesBaseDetail,
 } from './utils/hermes-base';
 import { isStandaloneService } from './utils/http-helper';
@@ -83,6 +83,7 @@ export interface VersionCommandOptions {
 export {
   bindVersionToPackages,
   fetchVersions,
+  findVersion,
   normalizeDeps,
 } from './version-operations';
 
@@ -113,8 +114,8 @@ async function describePpkBundle(
     if (bundle) {
       const bundleHash = sha256Hex(bundle);
       meta.bundleHash = bundleHash;
-      const hbcVersion = getHbcVersion(bundle) ?? base?.bytecodeVersion;
-      if (hbcVersion != null) meta.bytecodeVersion = hbcVersion;
+      // 纯 JS bundle 上报 0：服务端据此绝不把它当作 Hermes base
+      meta.bytecodeVersion = reportedBytecodeVersion(bundle);
       await cachePut(bundle, undefined, bundleHash).catch(() => {});
       Object.assign(meta, bundleLocationFields(found?.location));
     }
@@ -223,16 +224,14 @@ export const versionCommands = {
     // fail the publish, only lose the archive.
     let sourceMapUploadError: unknown;
     const [{ hash }, bundleMeta, commit, sourceMapUpload] = await Promise.all([
-      uploadFile(fn, undefined, appId),
+      uploadFile(fn, appId),
       describePpkBundle(fn, options.hermesBase),
       getCommitInfo(),
       uploadSourcemapPath
-        ? uploadFile(uploadSourcemapPath, undefined, appId).catch(
-            (error: unknown) => {
-              sourceMapUploadError = error;
-              return undefined;
-            },
-          )
+        ? uploadFile(uploadSourcemapPath, appId).catch((error: unknown) => {
+            sourceMapUploadError = error;
+            return undefined;
+          })
         : Promise.resolve(undefined),
     ]).finally(() => {
       // the packed copy only exists for the upload; a failed ppk upload must

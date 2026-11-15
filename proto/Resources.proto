@@ -1,3 +1,7 @@
+// [INPUT]: 依赖 protobuf 模式与 Android AAB 格式约定
+// [OUTPUT]: 提供 Android AAB 资源表、XML 与资源值消息
+// [POS]: proto 的格式契约，由原生包解析和夹具消费，不承载业务身份决策
+// [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 syntax = "proto3";
 
 package aapt.pb;

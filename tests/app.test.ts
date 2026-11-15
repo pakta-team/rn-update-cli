@@ -139,11 +139,52 @@ describe('getOrCreateChannel', () => {
       name: 'test',
     });
 
-    await expect(getOrCreateChannel('app-1', ' TEST ')).resolves.toEqual({
+    await expect(getOrCreateChannel('app-1', ' test ')).resolves.toEqual({
       channel: { id: 'channel-test', code: 'test', name: 'test' },
       created: true,
     });
     expect(createChannelSpy).toHaveBeenCalledWith('app-1', 'test', 'test');
+  });
+
+  test.each(['Beta', 'beta'])(
+    'prefers exact historical %s over casefold',
+    async (code) => {
+      const channels = [
+        { id: 'upper', code: 'Beta', name: 'Beta' },
+        { id: 'lower', code: 'beta', name: 'beta' },
+      ];
+      getChannelsSpy = spyOn(api, 'getChannels').mockResolvedValue(channels);
+      createChannelSpy = spyOn(api, 'createChannel').mockResolvedValue(
+        channels[0],
+      );
+      expect((await getOrCreateChannel('app-1', code)).channel.code).toBe(code);
+      expect(createChannelSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  test('rejects ambiguous casefold with zero channel writes', async () => {
+    getChannelsSpy = spyOn(api, 'getChannels').mockResolvedValue([
+      { id: 'upper', code: 'Beta', name: 'Beta' },
+      { id: 'lower', code: 'beta', name: 'beta' },
+    ]);
+    createChannelSpy = spyOn(api, 'createChannel').mockResolvedValue({
+      id: 'unused',
+      code: 'beta',
+      name: 'beta',
+    });
+    await expect(getOrCreateChannel('app-1', 'BETA')).rejects.toThrow();
+    expect(createChannelSpy).not.toHaveBeenCalled();
+  });
+
+  test('does not create a lowercase replacement for missing mixed-case identity', async () => {
+    getChannelsSpy = spyOn(api, 'getChannels').mockResolvedValue([]);
+    createChannelSpy = spyOn(api, 'createChannel').mockResolvedValue({
+      id: 'unused',
+      code: 'beta',
+      name: 'beta',
+    });
+    await expect(getOrCreateChannel('app-1', 'Beta')).rejects.toThrow();
+    expect(createChannelSpy).not.toHaveBeenCalled();
   });
 
   test('treats a concurrent channel creation as idempotent', async () => {

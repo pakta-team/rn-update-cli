@@ -1,15 +1,11 @@
 /**
- * [INPUT]: 依赖运行时 HTTP、独立服务 multipart 协议、CLI 会话凭据与本地化文案
+ * [INPUT]: 依赖运行时代理、共享流式上传传输、独立服务 multipart 会话协议、CLI 凭据与本地化文案
  * [OUTPUT]: 对外提供认证请求、当前应用会员权益读取、按字节显示进度的对象上传、应用渠道（含创建）、原生包、不可变热更新包/投放策略与 Hermes base 查询 API
- * [POS]: CLI 传输边界，统一旧服务兼容路径与独立 Go 服务管理路径，确保 standalone 包体和 Deployment 请求不落回旧 /app 路由
+ * [POS]: CLI 传输边界，统一上传期限、重试流重建与进度回滚；standalone 保留对象定位、ETag 和 complete/abort 会话终局，不回退旧 /app 路由
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 import filesizeParser from 'filesize-parser';
 import fs from 'fs';
-import type {
-  RequestInit as NodeFetchRequestInit,
-  Response as NodeFetchResponse,
-} from 'node-fetch';
 import path from 'path';
 import type ProgressBar from 'progress';
 import { Readable } from 'stream';
@@ -27,6 +23,12 @@ import {
   resolveProxy,
   runtimeFetch,
 } from './utils/runtime';
+import {
+  multipartRequest,
+  sendUploadRequest,
+  type UploadRequest,
+  type UploadResponse,
+} from './utils/upload-request';
 
 let session: Session | undefined;
 let savedSession: Session | undefined;
@@ -296,11 +298,12 @@ export async function getMembershipEntitlement(appId: string) {
   );
 }
 
-// Upload deadline: generous for a slow link (1 s/MB on top of a 30 s base,
-// never below 60 s) but bounded, so a stalled connection cannot hang a CI job
-// forever. The bar keeps ticking while bytes flow; the deadline is absolute.
+// Upload deadline: generous for a slow link (5 s/MB, i.e. ~200 KB/s, on top
+// of a 30 s base, never below 60 s) but bounded, so a stalled connection cannot
+// hang a CI job forever. The bar keeps ticking while bytes flow; the deadline
+// is absolute.
 const UPLOAD_TIMEOUT_BASE_MS = 30_000;
-const UPLOAD_TIMEOUT_PER_MB_MS = 1_000;
+const UPLOAD_TIMEOUT_PER_MB_MS = 5_000;
 const UPLOAD_TIMEOUT_MIN_MS = 60_000;
 const UPLOAD_MAX_RETRIES = 1;
 
@@ -345,31 +348,27 @@ class UploadTimeoutError extends Error {
   }
 }
 
-/**
- * node-fetch is only needed for the streaming multipart / PUT upload below
- * (the built-in fetch cannot stream a form-data body). Loading it eagerly
- * pulled whatwg-url → punycode into every command, which Node ≥ 21 greets
- * with a DEP0040 deprecation warning on stderr; so it is loaded on first use.
- */
-function loadNodeFetch(): typeof import('node-fetch').default {
-  const mod = require('node-fetch');
-  return (mod.default ?? mod) as typeof import('node-fetch').default;
+/** A byte range of the file (end exclusive) and its retry budget. */
+interface UploadSlice {
+  start: number;
+  end: number;
+  retries: number;
 }
 
 /**
- * Send the file with a size-scaled deadline and one retry on a transient
- * network error. `buildRequest` is invoked per attempt with a fresh file
- * stream (a consumed stream/form cannot be replayed).
+ * Send the file (or one slice of it) with a size-scaled deadline and retries
+ * on a transient network error. `buildRequest` is invoked per attempt with a
+ * fresh file stream (a consumed stream/form cannot be replayed).
  */
 async function sendUpload(
   fn: string,
   realUrl: string,
   fileSize: number,
   bar: ProgressBar,
-  buildRequest: (fileStream: fs.ReadStream) => NodeFetchRequestInit,
-): Promise<NodeFetchResponse> {
-  const timeoutMs = uploadTimeoutMs(fileSize);
-  const nodeFetch = loadNodeFetch();
+  buildRequest: (fileStream: Readable) => UploadRequest,
+  slice: UploadSlice = { start: 0, end: fileSize, retries: UPLOAD_MAX_RETRIES },
+): Promise<UploadResponse> {
+  const timeoutMs = uploadTimeoutMs(slice.end - slice.start);
   // HTTP(S)_PROXY / NO_PROXY, like every other request of the CLI
   const agent = proxyAgentFor(realUrl);
   for (let attempt = 0; ; attempt++) {
@@ -379,28 +378,103 @@ async function sendUpload(
       timedOut = true;
       controller.abort();
     }, timeoutMs);
-    const fileStream = fs.createReadStream(fn);
-    trackUploadProgress(fileStream, bar);
+    const fileStream =
+      slice.end === slice.start
+        ? Readable.from([])
+        : fs.createReadStream(fn, { start: slice.start, end: slice.end - 1 });
+    let sent = 0;
+    fileStream.on('data', (data) => {
+      sent += data.length;
+      bar.tick(data.length);
+    });
     try {
-      return await nodeFetch(realUrl, {
-        ...buildRequest(fileStream),
+      return await sendUploadRequest(realUrl, buildRequest(fileStream), {
         agent,
         signal: controller.signal,
+        userAgent,
       });
     } catch (rawError) {
       fileStream.destroy();
       const error = timedOut ? new UploadTimeoutError(timeoutMs) : rawError;
-      if (attempt < UPLOAD_MAX_RETRIES && isTransientUploadError(error)) {
+      if (attempt < slice.retries && isTransientUploadError(error)) {
         const reason = error instanceof Error ? error.message : String(error);
         console.warn(`\nUpload interrupted (${reason}), retrying...`);
-        // restart the bar from zero for the second pass
-        bar.curr = 0;
+        // take this attempt's bytes back off the bar before the next pass
+        bar.curr = Math.max(0, bar.curr - sent);
         continue;
       }
       throw error;
     } finally {
       clearTimeout(timer);
+      fileStream.destroy();
     }
+  }
+}
+
+/** Parts in flight at once; each is its own TCP connection. */
+const CHUNK_CONCURRENCY = 4;
+/** A part is small, so it can afford more retries than the whole file. */
+const CHUNK_MAX_RETRIES = 2;
+
+interface ChunkedInstruction {
+  key: string;
+  partSize: number;
+  parts: Record<string, string>[];
+}
+
+/** A part the store answered with an HTTP error: retrying will not help. */
+class ChunkRejectedError extends Error {}
+
+/**
+ * Post the parts of a chunked upload, CHUNK_CONCURRENCY at a time. The first
+ * failure stops scheduling new parts; the ones in flight finish, then it is
+ * thrown.
+ */
+async function sendChunks(
+  fn: string,
+  realUrl: string,
+  fileSize: number,
+  bar: ProgressBar,
+  chunked: ChunkedInstruction,
+  postForm: (
+    fields: Record<string, string>,
+    byteCount: number,
+  ) => (fileStream: Readable) => UploadRequest,
+): Promise<void> {
+  let next = 0;
+  let failure: unknown;
+  const worker = async () => {
+    while (failure === undefined && next < chunked.parts.length) {
+      const index = next++;
+      const start = index * chunked.partSize;
+      const end = Math.min(fileSize, start + chunked.partSize);
+      try {
+        const res = await sendUpload(
+          fn,
+          realUrl,
+          fileSize,
+          bar,
+          postForm(chunked.parts[index], end - start),
+          { start, end, retries: CHUNK_MAX_RETRIES },
+        );
+        if (res.status > 299) {
+          throw new ChunkRejectedError(
+            `${res.status}: ${res.statusText || 'Upload failed'} (part ${index + 1}/${chunked.parts.length})`,
+          );
+        }
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(CHUNK_CONCURRENCY, chunked.parts.length) },
+      worker,
+    ),
+  );
+  if (failure !== undefined) {
+    throw failure;
   }
 }
 
@@ -421,35 +495,26 @@ function createUploadProgressBar(fileSize: number): ProgressBar {
   });
 }
 
-/**
- * 监听上传流的数据事件，保持旧服务与 standalone multipart 的进度语义一致。
- */
-function trackUploadProgress(
-  fileStream: NodeJS.ReadableStream,
-  bar: ProgressBar,
-): void {
-  fileStream.on('data', (data: Buffer | string) => {
-    bar.tick(Buffer.byteLength(data));
-  });
-}
-
 export async function uploadFile(
   fn: string,
-  key?: string,
   appId?: string | number,
 ): Promise<{ hash: string; url?: string; key?: string }> {
   if (isStandaloneService()) {
     return uploadMultipartFile(fn, appId);
   }
+  const fileSize = fs.statSync(fn).size;
   // appId 用于服务端路由:绑定了自托管节点(rnu-node)的应用,
-  // 上传指令会指向节点或其对象存储
+  // 上传指令会指向节点或其对象存储。chunked + size 让支持的服务端(GCS)
+  // 改发分片并行上传的指令;不认识这两个字段的服务端照旧整文件上传
   const resp = await post('/upload', {
     ext: path.extname(fn),
     ...(appId ? { appId: Number(appId) } : {}),
+    chunked: true,
+    size: fileSize,
   });
   const { url, backupUrl, formData, maxSize } = resp;
   let realUrl = url;
-  if (backupUrl) {
+  if (backupUrl && backupUrl !== url) {
     if (global.USE_ACC_OSS) {
       realUrl = backupUrl;
     } else if (!resolveProxy(url)) {
@@ -463,10 +528,8 @@ export async function uploadFile(
         realUrl = backupUrl;
       }
     }
-    // console.log({realUrl});
   }
 
-  const fileSize = fs.statSync(fn).size;
   if (maxSize && fileSize > filesizeParser(maxSize)) {
     const readableFileSize = `${(fileSize / 1048576).toFixed(1)}m`;
     throw new Error(
@@ -494,7 +557,7 @@ export async function uploadFile(
 
   // 自托管节点的 s3 直传:服务端下发预签名 PUT,字节直达用户的对象存储
   if (resp.method === 'PUT') {
-    let putRes: NodeFetchResponse;
+    let putRes: UploadResponse;
     try {
       putRes = await sendUpload(fn, realUrl, fileSize, bar, (fileStream) => ({
         method: 'PUT',
@@ -517,23 +580,40 @@ export async function uploadFile(
     return { hash: resp.key };
   }
 
-  const FormData = require('form-data') as typeof import('form-data');
-  let res: NodeFetchResponse;
-  try {
-    res = await sendUpload(fn, realUrl, fileSize, bar, (fileStream) => {
-      const form = new FormData();
-      for (const [k, v] of Object.entries(formData)) {
-        form.append(k, v);
+  const postForm =
+    (fields: Record<string, string>, byteCount: number) =>
+    (fileStream: Readable): UploadRequest =>
+      multipartRequest(fields, {
+        name: fn,
+        size: byteCount,
+        stream: fileStream,
+      });
+
+  if (resp.chunked) {
+    try {
+      await sendChunks(fn, realUrl, fileSize, bar, resp.chunked, postForm);
+    } catch (error) {
+      if (error instanceof ChunkRejectedError) {
+        throw createRequestError(error.message, realUrl);
       }
-      if (key) {
-        form.append('key', key);
-      }
-      // With every part's length known node-fetch sends Content-Length instead
-      // of a chunked body: what object stores expect, and the only framing
-      // that survives http-proxy-agent's rewrite of the buffered request head.
-      form.append('file', fileStream, { knownLength: fileSize });
-      return { method: 'POST', body: form };
+      return rethrowUploadError(error);
+    }
+    await post('/upload/complete', {
+      key: resp.chunked.key,
+      parts: resp.chunked.parts.length,
     });
+    return { hash: resp.chunked.key as string };
+  }
+
+  let res: UploadResponse;
+  try {
+    res = await sendUpload(
+      fn,
+      realUrl,
+      fileSize,
+      bar,
+      postForm(formData, fileSize),
+    );
   } catch (error) {
     return rethrowUploadError(error);
   }
@@ -545,8 +625,7 @@ export async function uploadFile(
     );
   }
 
-  // const body = await response.json();
-  return { hash: key || formData.key };
+  return { hash: formData.key };
 }
 
 /**
@@ -599,7 +678,6 @@ async function uploadMultipartFile(fn: string, appId?: string | number) {
     }).catch(() => undefined);
     throw error;
   }
-  const nodeFetch = loadNodeFetch();
   const bar = createUploadProgressBar(fileSize);
   const completed: Array<{ partNumber: number; eTag: string; size: number }> =
     [];
@@ -607,33 +685,24 @@ async function uploadMultipartFile(fn: string, appId?: string | number) {
     for (const part of presigned.parts) {
       const start = (part.partNumber - 1) * partSize;
       const length = Math.min(partSize, Math.max(0, fileSize - start));
-      // 预签名 PUT 需要已知 Content-Length；流式读取分片既满足该约束，
-      // 又让进度条随着真实上传数据持续推进，而不是在请求前一次性读入 Buffer。
-      const partStream =
-        length === 0
-          ? Readable.from([])
-          : fs.createReadStream(fn, {
-              start,
-              end: start + length - 1,
-            });
-      trackUploadProgress(partStream, bar);
-      let response: NodeFetchResponse;
-      try {
-        response = await nodeFetch(part.url, {
+      const response = await sendUpload(
+        fn,
+        part.url,
+        fileSize,
+        bar,
+        (partStream) => ({
           method: 'PUT',
           body: partStream,
           headers: { 'content-length': String(length) },
-        });
-      } catch (error) {
-        partStream.destroy();
-        throw error;
-      }
-      if (!response.ok) {
+        }),
+        { start, end: start + length, retries: UPLOAD_MAX_RETRIES },
+      );
+      if (response.status < 200 || response.status > 299) {
         throw new Error(
           t('objectStorageUploadFailed', { status: response.status }),
         );
       }
-      const eTag = response.headers.get('etag');
+      const eTag = response.eTag;
       if (!eTag) {
         throw new Error(
           t('objectStoragePartETagMissing', { partNumber: part.partNumber }),

@@ -1,6 +1,6 @@
 /**
  * [INPUT]: 依赖项目 package.json、已安装依赖目录、文件系统与路径解析
- * [OUTPUT]: 对外提供 getDepVersions、getDepVersion 与惰性 depVersions 代理
+ * [OUTPUT]: 对外提供惰性缓存的 getDepVersions 与单依赖读取 getDepVersion
  * [POS]: CLI 运行时版本信息边界，按需读取依赖版本并缓存，供诊断和命令编排消费
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
@@ -84,15 +84,11 @@ function readDepVersions(cwd: string): Record<string, string> {
   }
 
   // sorted keys: the object is sent to the server as-is and diffed
-  return Object.keys(versions)
-    .sort()
-    .reduce(
-      (obj, key) => {
-        obj[key] = versions[key];
-        return obj;
-      },
-      {} as Record<string, string>,
-    );
+  return Object.fromEntries(
+    Object.keys(versions)
+      .sort()
+      .map((key) => [key, versions[key]]),
+  );
 }
 
 /** Installed versions of the cwd project's dependencies, keys sorted. */
@@ -125,29 +121,3 @@ export function getDepVersion(
   }
   return readInstalledVersion(name, resolvedCwd);
 }
-
-/**
- * Same data as `getDepVersions()` but as a lazily populated object, for the
- * remaining property-access call sites (`depVersions['react-native']`).
- * Nothing is resolved until the first property access.
- */
-export const depVersions: Record<string, string> = new Proxy(
-  {} as Record<string, string>,
-  {
-    get: (_target, key) =>
-      typeof key === 'string' ? getDepVersions()[key] : undefined,
-    has: (_target, key) => typeof key === 'string' && key in getDepVersions(),
-    ownKeys: () => Object.keys(getDepVersions()),
-    getOwnPropertyDescriptor: (_target, key) => {
-      if (typeof key !== 'string' || !(key in getDepVersions())) {
-        return undefined;
-      }
-      return {
-        value: getDepVersions()[key],
-        writable: false,
-        enumerable: true,
-        configurable: true,
-      };
-    },
-  },
-);

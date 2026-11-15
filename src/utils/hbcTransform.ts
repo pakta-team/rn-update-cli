@@ -24,9 +24,11 @@
 
 import { copyFile, open as openFile, rm, stat } from 'node:fs/promises';
 
-const HBC_MAGIC = Buffer.from([0xc6, 0x1f, 0xbc, 0x03, 0xc1, 0x03, 0x19, 0x1f]);
+export const HBC_MAGIC = Buffer.from([
+  0xc6, 0x1f, 0xbc, 0x03, 0xc1, 0x03, 0x19, 0x1f,
+]);
 const HEADER_COUNTS_OFFSET = 32; // magic(8) + version(4) + sourceHash(20)
-const HBC_HEADER_SIZE = 128;
+export const HBC_HEADER_SIZE = 128;
 
 /** 差分字段:条目内 byte 偏移处按小端读 u32,取 [bit, bit+bits) 位。 */
 type DeltaField = { byte: number; bit: number; bits: number };
@@ -52,7 +54,31 @@ const FUNC_OFFSET_25: DeltaField = { byte: 0, bit: 0, bits: 25 };
 const STRING_OFFSET_23: DeltaField = { byte: 0, bit: 1, bits: 23 };
 const PAIR_OFFSET_32: DeltaField = { byte: 0, bit: 0, bits: 32 };
 
-// v98 两种头部变体共享的段布局
+// 晚期 v98 与 v99 共用的头部计数字段
+const V98_LATE_HEADER_FIELDS = [
+  'fileLength',
+  'globalCodeIndex',
+  'functionCount',
+  'stringKindCount',
+  'identifierCount',
+  'stringCount',
+  'overflowStringCount',
+  'stringStorageSize',
+  'bigIntCount',
+  'bigIntStorageSize',
+  'regExpCount',
+  'regExpStorageSize',
+  'literalValueBufferSize',
+  'objKeyBufferSize',
+  'objShapeTableCount',
+  'numStringSwitchImms',
+  'segmentID',
+  'cjsModuleCount',
+  'functionSourceCount',
+  'debugInfoOffset',
+];
+
+// v98 两种头部变体(及 v99)共享的段布局
 const V98_SECTIONS: SectionDesc[] = [
   {
     name: 'functionHeaders',
@@ -200,30 +226,12 @@ export const HBC_LAYOUTS: HbcLayout[] = [
     // 多一个 numStringSwitchImms 槽(hermes static_h 在不 bump 版本号的
     // 情况下插入,同一版本号 98 因此存在两种布局,依结构校验区分)。
     // 段布局与早期 v98 相同。
+    // Hermes V1 v99(hermes-compiler 260318099,RN 0.88+)文件头与段布局
+    // 同晚期 v98,只改了函数头内部位域(去 NumCacheNewObject)与操作码表,
+    // 二者都不在本变换触及的范围内。
     minVersion: 98,
-    maxVersion: 98,
-    headerFields: [
-      'fileLength',
-      'globalCodeIndex',
-      'functionCount',
-      'stringKindCount',
-      'identifierCount',
-      'stringCount',
-      'overflowStringCount',
-      'stringStorageSize',
-      'bigIntCount',
-      'bigIntStorageSize',
-      'regExpCount',
-      'regExpStorageSize',
-      'literalValueBufferSize',
-      'objKeyBufferSize',
-      'objShapeTableCount',
-      'numStringSwitchImms',
-      'segmentID',
-      'cjsModuleCount',
-      'functionSourceCount',
-      'debugInfoOffset',
-    ],
+    maxVersion: 99,
+    headerFields: V98_LATE_HEADER_FIELDS,
     sections: V98_SECTIONS,
   },
   {
@@ -233,27 +241,9 @@ export const HBC_LAYOUTS: HbcLayout[] = [
     // arrayBufferSize 更名 literalValueBufferSize(槽位不变)。
     minVersion: 98,
     maxVersion: 98,
-    headerFields: [
-      'fileLength',
-      'globalCodeIndex',
-      'functionCount',
-      'stringKindCount',
-      'identifierCount',
-      'stringCount',
-      'overflowStringCount',
-      'stringStorageSize',
-      'bigIntCount',
-      'bigIntStorageSize',
-      'regExpCount',
-      'regExpStorageSize',
-      'literalValueBufferSize',
-      'objKeyBufferSize',
-      'objShapeTableCount',
-      'segmentID',
-      'cjsModuleCount',
-      'functionSourceCount',
-      'debugInfoOffset',
-    ],
+    headerFields: V98_LATE_HEADER_FIELDS.filter(
+      (field) => field !== 'numStringSwitchImms',
+    ),
     sections: V98_SECTIONS,
   },
 ];
@@ -391,7 +381,11 @@ export type HbcSectionRange = { start: number; size: number };
 export function resolveHbcSections(
   header: Buffer,
   fileLength: number,
-): { version: number; sections: Map<string, HbcSectionRange> } | null {
+): {
+  version: number;
+  layout: HbcLayout;
+  sections: Map<string, HbcSectionRange>;
+} | null {
   const version = getHbcVersion(header);
   if (version === null) return null;
   for (const layout of findLayouts(version)) {
@@ -399,6 +393,7 @@ export function resolveHbcSections(
     if (resolved) {
       return {
         version,
+        layout,
         sections: new Map(
           resolved.map((s) => [s.desc.name, { start: s.start, size: s.size }]),
         ),
@@ -448,7 +443,7 @@ export function transformHbc(buf: Buffer, inverse = false): Buffer | null {
 }
 
 /** 返回该 buffer 结构上匹配的布局(候选中第一个校验通过者)。 */
-export function pickLayout(buf: Buffer): HbcLayout | null {
+function pickLayout(buf: Buffer): HbcLayout | null {
   const version = getHbcVersion(buf);
   if (version === null) return null;
   for (const layout of findLayouts(version)) {
@@ -497,7 +492,7 @@ function applyDeltaSections(
 type HbcFileHeader = { header: Buffer; size: number };
 
 /** 读取文件头 128 字节与总长;文件过短或非 HBC 时返回 null。 */
-async function readHbcFileHeader(
+export async function readHbcFileHeader(
   filePath: string,
 ): Promise<HbcFileHeader | null> {
   const { size } = await stat(filePath);
@@ -603,6 +598,25 @@ export type HbcTransformMeta = {
   layout: HbcLayoutWire;
 };
 
+/** 两侧共同的 HBC 版本;任一侧不是 HBC 或版本不同时为 null */
+function sharedHbcVersion(oldHeader: Buffer, newHeader: Buffer): number | null {
+  const version = getHbcVersion(newHeader);
+  return version !== null && getHbcVersion(oldHeader) === version
+    ? version
+    : null;
+}
+
+function transformMeta(
+  hbcVersion: number,
+  layout: HbcLayout,
+): HbcTransformMeta {
+  return {
+    v: HBC_TRANSFORM_VERSION,
+    hbcVersion,
+    layout: compileLayoutToWire(layout),
+  };
+}
+
 /**
  * 若 old/new 均为同版本且存在两侧都通过结构校验的候选布局,返回变换结果、
  * 选中布局与写入 __diff.json 的元数据;否则返回 null。
@@ -616,25 +630,13 @@ export function tryTransformPair(
   layout: HbcLayout;
   meta: HbcTransformMeta;
 } | null {
-  const oldVersion = getHbcVersion(oldBuf);
-  const newVersion = getHbcVersion(newBuf);
-  if (oldVersion === null || newVersion === null || oldVersion !== newVersion) {
-    return null;
-  }
-  for (const layout of findLayouts(newVersion)) {
+  const version = sharedHbcVersion(oldBuf, newBuf);
+  if (version === null) return null;
+  for (const layout of findLayouts(version)) {
     const tOld = transformHbcWithLayout(oldBuf, layout, false);
     const tNew = transformHbcWithLayout(newBuf, layout, false);
     if (!tOld || !tNew) continue;
-    return {
-      tOld,
-      tNew,
-      layout,
-      meta: {
-        v: HBC_TRANSFORM_VERSION,
-        hbcVersion: newVersion,
-        layout: compileLayoutToWire(layout),
-      },
-    };
+    return { tOld, tNew, layout, meta: transformMeta(version, layout) };
   }
   return null;
 }
@@ -655,12 +657,9 @@ export async function tryTransformPairFiles(
     readHbcFileHeader(newPath),
   ]);
   if (!oldInfo || !newInfo) return null;
-  const oldVersion = getHbcVersion(oldInfo.header);
-  const newVersion = getHbcVersion(newInfo.header);
-  if (oldVersion === null || newVersion === null || oldVersion !== newVersion) {
-    return null;
-  }
-  for (const layout of findLayouts(newVersion)) {
+  const version = sharedHbcVersion(oldInfo.header, newInfo.header);
+  if (version === null) return null;
+  for (const layout of findLayouts(version)) {
     if (
       !resolveSectionsFromHeader(oldInfo.header, oldInfo.size, layout) ||
       !resolveSectionsFromHeader(newInfo.header, newInfo.size, layout)
@@ -672,14 +671,7 @@ export async function tryTransformPairFiles(
       transformHbcFile(newPath, tNewPath, layout, false),
     ]);
     if (!tOld || !tNew) continue;
-    return {
-      layout,
-      meta: {
-        v: HBC_TRANSFORM_VERSION,
-        hbcVersion: newVersion,
-        layout: compileLayoutToWire(layout),
-      },
-    };
+    return { layout, meta: transformMeta(version, layout) };
   }
   return null;
 }

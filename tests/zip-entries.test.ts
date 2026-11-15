@@ -1,9 +1,15 @@
+/**
+ * [INPUT]: 依赖 ZIP 枚举/输出工厂、临时文件系统与 yazl 夹具
+ * [OUTPUT]: 提供嵌套 HAP 清理和归档早期写失败回归
+ * [POS]: CLI ZIP 公共基础设施测试，约束异步错误传播及部分制品资源释放
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
 import { ZipFile } from 'yazl';
-import { enumZipEntries } from '../src/utils/zip-entries';
+import { createOutputZip, enumZipEntries } from '../src/utils/zip-entries';
 
 function zipBuffer(entries: Record<string, Buffer>): Promise<Buffer> {
   const zip = new ZipFile();
@@ -19,6 +25,28 @@ function zipBuffer(entries: Record<string, Buffer>): Promise<Buffer> {
       .on('error', reject);
   });
 }
+
+describe('createOutputZip', () => {
+  test('a write error before writePromise is awaited is not an unhandled rejection', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rnu-output-zip-'));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const output = path.join(dir, 'out.ppk');
+      fs.mkdirSync(output);
+      const { writePromise, abort } = createOutputZip(output);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+      await expect(writePromise).rejects.toMatchObject({ code: 'EISDIR' });
+      await abort();
+      expect(fs.statSync(output).isDirectory()).toBe(true);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      fs.removeSync(dir);
+    }
+  });
+});
 
 const nestedTempDirs = () =>
   fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('nested_zip_'));

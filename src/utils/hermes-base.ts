@@ -1,7 +1,7 @@
 /**
  * [INPUT]: 依赖 Node 子进程/文件流/HTTP Range、Pakta CLI 临时目录、ZIP 读取原语、raw HBC 审计器、failure-fingerprint 脱敏指纹与 hermes-cached-object 归一化器
  * [OUTPUT]: 对外提供 Hermes base 选择、缓存、下载、完整语义等价校验、清理及发布元数据能力
- * [POS]: CLI Hermes delta 优化边界，所有失败降级到普通编译，不阻塞发布流程
+ * [POS]: CLI Hermes delta 优化边界，下载/审计落盘显式维护偏移；所有失败降级到普通编译，不阻塞发布流程
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
@@ -9,7 +9,7 @@
 //
 // Hermes re-sorts its string table by identifier frequency on every compile, so
 // any source change renumbers most string IDs and the bytecode diff explodes
-// (see hermes-base-bytecode-方案.md). Compiling with the previous HBC of the
+// (see docs/hermes-base-verification.md). Compiling with the previous HBC of the
 // same app as `-base-bytecode` keeps old IDs stable and shrinks patches 5-30×.
 // This module resolves that base: gating by hermesc build, HBC version probe,
 // server lookup, a sha256-named local cache, download + verification, and the
@@ -17,28 +17,45 @@
 // compile — nothing here may block a release.
 import { StringDecoder } from 'node:string_decoder';
 import { spawn, spawnSync } from 'child_process';
-import { createHash } from 'crypto';
-import fs from 'fs-extra';
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { PassThrough, Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { tempDir } from './constants';
 import { failureFingerprint, redactFailureDetail } from './failure-fingerprint';
-import { getHbcVersion } from './hbcTransform';
+import {
+  ensureDir,
+  ensureDirSync,
+  pathExists,
+  remove,
+  removeSync,
+} from './fs-helpers';
+import { sha256File, sha256Hex } from './hash';
+import {
+  getHbcVersion,
+  HBC_HEADER_SIZE,
+  readHbcFileHeader,
+} from './hbcTransform';
 import { normalizeCachedObjectInstruction } from './hermes-cached-object';
 import {
   type LiteralBuffers,
   LiteralResolver,
-  readLiteralBuffers,
+  literalBuffersFromBytes,
 } from './hermes-literals';
-import { auditRawHermesBytecode, readHermesSemanticData } from './hermes-raw';
+import {
+  auditRawHermesBytecode,
+  foldWidthSuffix,
+  hermesSemanticData,
+  isFunctionHeader,
+} from './hermes-raw';
 import { hermesTimeout } from './hermes-timeout';
 import { t } from './i18n';
 import { webFetch } from './runtime';
-import { enumZipEntries, readEntry } from './zip-entries';
+import { readFirstEntry } from './zip-entries';
 import {
   fetchZipEntryData,
+  fetchZipEntryHead,
   openRemoteZip,
   RangeUnsupportedError,
   readRemoteZipEntry,
@@ -61,6 +78,35 @@ export class BundleHashMismatchError extends PermanentBaseError {
     );
   }
 }
+
+/** The base bundle is not Hermes bytecode of the version being compiled. */
+export class HbcVersionMismatchError extends PermanentBaseError {
+  constructor(
+    readonly version: number | null,
+    readonly expected: number,
+  ) {
+    super(
+      `downloaded base is ${version == null ? 'plain JS' : `HBC ${version}`}, need ${expected}`,
+    );
+  }
+}
+
+/**
+ * `bytecodeVersion` reported for a bundle that is not Hermes bytecode, so the
+ * server can tell "plain JS" from "not reported" (NULL) and never offers it
+ * as a base.
+ */
+export const PLAIN_JS_BYTECODE_VERSION = 0;
+
+/** the `bytecodeVersion` to report for `bundle` at publish / upload time */
+export function reportedBytecodeVersion(bundle: Buffer): number {
+  return getHbcVersion(bundle) ?? PLAIN_JS_BYTECODE_VERSION;
+}
+
+const describeBytecodeVersion = (version: number | null) =>
+  version === PLAIN_JS_BYTECODE_VERSION
+    ? 'plain JS'
+    : `HBC ${version ?? 'n/a'}`;
 
 /** time allowed for a response to start (headers) */
 const FETCH_HEADERS_TIMEOUT_MS = 30_000;
@@ -155,48 +201,32 @@ export function classifyHermesCommand(hermesCommand: string): {
       };
     }
     const build = /^(\d{9})\./.exec(version);
-    if (build) {
-      const ok = Number(build[1]) >= MIN_HERMES_COMPILER_BUILD;
-      return {
-        allowed: ok,
-        kind: 'hermes-compiler',
-        version,
-        reason: ok
-          ? undefined
-          : `hermes-compiler ${version} predates the delta-mode fix`,
-      };
-    }
     const commitly = /^0\.(\d+)\.\d+-commitly-(\d{8})/.exec(version);
-    if (commitly) {
-      const ok =
+    const stable = /^0\.(\d+)\.\d+$/.exec(version);
+    let ok: boolean;
+    if (build) {
+      ok = Number(build[1]) >= MIN_HERMES_COMPILER_BUILD;
+    } else if (commitly) {
+      ok =
         Number(commitly[1]) >= 14 &&
         Number(commitly[2]) >= MIN_HERMES_COMPILER_COMMITLY_DATE;
+    } else if (stable) {
+      ok = Number(stable[1]) >= 14;
+    } else {
       return {
-        allowed: ok,
+        allowed: false,
         kind: 'hermes-compiler',
         version,
-        reason: ok
-          ? undefined
-          : `hermes-compiler ${version} predates the delta-mode fix`,
-      };
-    }
-    const stable = /^0\.(\d+)\.\d+$/.exec(version);
-    if (stable) {
-      const ok = Number(stable[1]) >= 14;
-      return {
-        allowed: ok,
-        kind: 'hermes-compiler',
-        version,
-        reason: ok
-          ? undefined
-          : `hermes-compiler ${version} predates the delta-mode fix`,
+        reason: `unrecognized hermes-compiler version ${version}`,
       };
     }
     return {
-      allowed: false,
+      allowed: ok,
       kind: 'hermes-compiler',
       version,
-      reason: `unrecognized hermes-compiler version ${version}`,
+      reason: ok
+        ? undefined
+        : `hermes-compiler ${version} predates the delta-mode fix`,
     };
   }
   return {
@@ -210,29 +240,10 @@ export function classifyHermesCommand(hermesCommand: string): {
 // HBC helpers
 // ---------------------------------------------------------------------------
 
-export function sha256Hex(data: Buffer): string {
-  return createHash('sha256').update(data).digest('hex');
-}
-
-/** sha256 of a file, streamed (a cached base can be tens of MB) */
-export async function sha256File(file: string): Promise<string> {
-  const hash = createHash('sha256');
-  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
-  return hash.digest('hex');
-}
-
 /** HBC version from the first bytes of a file, without reading the rest */
 export async function readFileHbcVersion(file: string): Promise<number | null> {
-  const header = Buffer.alloc(128);
-  const fd = await fs.open(file, 'r');
-  try {
-    const { bytesRead } = await fs.read(fd, header, 0, 128, 0);
-    return getHbcVersion(header.subarray(0, bytesRead));
-  } catch {
-    return null;
-  } finally {
-    await fs.close(fd);
-  }
+  const info = await readHbcFileHeader(file);
+  return info && getHbcVersion(info.header);
 }
 
 const PROBE_CACHE_FILE = 'hbc-versions.json';
@@ -266,7 +277,7 @@ function writeProbeCache(entries: Record<string, number>): void {
     const trimmed = Object.fromEntries(
       keys.slice(-PROBE_CACHE_ENTRIES).map((key) => [key, entries[key]]),
     );
-    fs.ensureDirSync(cacheDir());
+    ensureDirSync(cacheDir());
     fs.writeFileSync(
       path.join(cacheDir(), PROBE_CACHE_FILE),
       JSON.stringify(trimmed),
@@ -317,18 +328,12 @@ function compileProbe(hermesCommand: string): number | null {
     if (result.status !== 0 || !fs.existsSync(output)) {
       return null;
     }
-    const header = Buffer.alloc(128);
-    const fd = fs.openSync(output, 'r');
-    try {
-      fs.readSync(fd, header, 0, 128, 0);
-    } finally {
-      fs.closeSync(fd);
-    }
-    return getHbcVersion(header);
+    // the probe output is a few hundred bytes
+    return getHbcVersion(fs.readFileSync(output));
   } catch {
     return null;
   } finally {
-    fs.removeSync(dir);
+    removeSync(dir);
   }
 }
 
@@ -371,41 +376,27 @@ export async function extractBundleFromArchive(
     ext === '.bundlejs' ||
     ext === '.js'
   ) {
-    return fs.readFile(filePath);
+    return fs.promises.readFile(filePath);
   }
   if (ext === '.ppk' || ext === '.apk' || ext === '.ipa') {
-    return readFirstZipEntry(
+    return readFirstEntry(
       filePath,
       bundleEntryMatcher(ext.slice(1) as BaseArtifactType),
     );
   }
   if (ext === '.app') {
-    // harmony .app wraps .hap archives; reuse the existing parser
-    const { default: AppInfoParser } = await import('./app-info-parser');
-    const parser = new AppInfoParser(filePath);
-    const [bundle] = await parser.parser.getEntriesFromHarmonyApp([
+    // harmony .app wraps .hap archives; readZipEntries walks into them
+    const { readZipEntries } = await import('./app-info-parser/zip');
+    const [bundle] = await readZipEntries(filePath, [
       /^resources\/rawfile\/bundle\.harmony\.js$/,
     ]);
     return bundle ?? null;
   }
   // unknown extension: try as zip, then as raw file
-  const fromZip = await readFirstZipEntry(filePath, (name) =>
+  const fromZip = await readFirstEntry(filePath, (name) =>
     BUNDLE_ENTRY_NAMES.includes(name),
   ).catch(() => null);
-  return fromZip ?? fs.readFile(filePath);
-}
-
-async function readFirstZipEntry(
-  zipPath: string,
-  matches: (name: string) => boolean,
-): Promise<Buffer | null> {
-  let found: Buffer | null = null;
-  await enumZipEntries(zipPath, async (entry, zipFile) => {
-    if (!found && matches(entry.fileName)) {
-      found = await readEntry(entry, zipFile);
-    }
-  });
-  return found;
+  return fromZip ?? fs.promises.readFile(filePath);
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +405,9 @@ async function readFirstZipEntry(
 
 export const DEFAULT_CACHE_MAX_BYTES = 500 * 1024 * 1024;
 export const DEFAULT_CACHE_MAX_FILES = 20;
+
+/** cache entries are named by the sha256 of their bundle */
+const isBundleHash = (name: string) => /^[0-9a-f]{64}$/.test(name);
 
 export function cacheDir(): string {
   return process.env.PAKTA_CACHE_DIR || path.join(tempDir, 'cache');
@@ -436,16 +430,16 @@ export function cacheLimits(overrideMaxMb?: number) {
 
 /** Returns the cached bundle path when present and its sha256 still matches. */
 export async function cacheLookup(bundleHash: string): Promise<string | null> {
-  if (!/^[0-9a-f]{64}$/.test(bundleHash)) return null;
+  if (!isBundleHash(bundleHash)) return null;
   const file = path.join(cacheDir(), bundleHash);
-  if (!(await fs.pathExists(file))) return null;
+  if (!(await pathExists(file))) return null;
   if ((await sha256File(file).catch(() => '')) !== bundleHash) {
     // corrupt entry: never trust cache content
-    await fs.remove(file).catch(() => {});
+    await remove(file).catch(() => {});
     return null;
   }
   const now = new Date();
-  await fs.utimes(file, now, now).catch(() => {});
+  await fs.promises.utimes(file, now, now).catch(() => {});
   return file;
 }
 
@@ -457,15 +451,15 @@ export async function cachePut(
 ): Promise<{ path: string; bundleHash: string }> {
   const bundleHash = knownHash ?? sha256Hex(bundle);
   const dir = cacheDir();
-  await fs.ensureDir(dir);
+  await ensureDir(dir);
   const file = path.join(dir, bundleHash);
-  if (!(await fs.pathExists(file))) {
+  if (!(await pathExists(file))) {
     const tmp = `${file}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, bundle);
-    await fs.rename(tmp, file);
+    await fs.promises.writeFile(tmp, bundle);
+    await fs.promises.rename(tmp, file);
   } else {
     const now = new Date();
-    await fs.utimes(file, now, now).catch(() => {});
+    await fs.promises.utimes(file, now, now).catch(() => {});
   }
   await enforceCacheLimits(maxMb, bundleHash);
   return { path: file, bundleHash };
@@ -476,19 +470,19 @@ export async function enforceCacheLimits(
   keep?: string,
 ): Promise<void> {
   const dir = cacheDir();
-  if (!(await fs.pathExists(dir))) return;
+  if (!(await pathExists(dir))) return;
   const { maxBytes, maxFiles } = cacheLimits(maxMb);
   const entries: { name: string; size: number; mtime: number }[] = [];
   const staleTmpCutoff = Date.now() - STALE_CACHE_TMP_MS;
-  for (const name of await fs.readdir(dir)) {
+  for (const name of await fs.promises.readdir(dir)) {
     const isTmp = isCacheTmpName(name);
-    if (!isTmp && !/^[0-9a-f]{64}$/.test(name)) continue;
-    const stat = await fs.stat(path.join(dir, name)).catch(() => null);
+    if (!isTmp && !isBundleHash(name)) continue;
+    const stat = await fs.promises.stat(path.join(dir, name)).catch(() => null);
     if (!stat?.isFile()) continue;
     if (isTmp) {
       // an interrupted cachePut; nothing will ever rename it into place
       if (stat.mtimeMs < staleTmpCutoff)
-        await fs.remove(path.join(dir, name)).catch(() => {});
+        await remove(path.join(dir, name)).catch(() => {});
       continue;
     }
     entries.push({ name, size: stat.size, mtime: stat.mtimeMs });
@@ -500,7 +494,7 @@ export async function enforceCacheLimits(
     total += entry.size;
     count += 1;
     if (entry.name !== keep && (total > maxBytes || count > maxFiles)) {
-      await fs.remove(path.join(dir, entry.name)).catch(() => {});
+      await remove(path.join(dir, entry.name)).catch(() => {});
     }
   }
 }
@@ -513,12 +507,12 @@ function isCacheTmpName(name: string): boolean {
 /** Remove every cached bundle (and staging leftovers); returns the bundle count. */
 export async function cleanCache(): Promise<number> {
   const dir = cacheDir();
-  if (!(await fs.pathExists(dir))) return 0;
+  if (!(await pathExists(dir))) return 0;
   let bundles = 0;
-  for (const name of await fs.readdir(dir)) {
-    const isBundle = /^[0-9a-f]{64}$/.test(name);
+  for (const name of await fs.promises.readdir(dir)) {
+    const isBundle = isBundleHash(name);
     if (!isBundle && !isCacheTmpName(name)) continue;
-    await fs.remove(path.join(dir, name));
+    await remove(path.join(dir, name));
     if (isBundle) bundles += 1;
   }
   return bundles;
@@ -532,10 +526,12 @@ export async function cacheStats(): Promise<{
   const dir = cacheDir();
   let files = 0;
   let bytes = 0;
-  if (await fs.pathExists(dir)) {
-    for (const name of await fs.readdir(dir)) {
-      if (!/^[0-9a-f]{64}$/.test(name)) continue;
-      const stat = await fs.stat(path.join(dir, name)).catch(() => null);
+  if (await pathExists(dir)) {
+    for (const name of await fs.promises.readdir(dir)) {
+      if (!isBundleHash(name)) continue;
+      const stat = await fs.promises
+        .stat(path.join(dir, name))
+        .catch(() => null);
       if (stat?.isFile()) {
         files += 1;
         bytes += stat.size;
@@ -550,12 +546,12 @@ export async function cleanStaleTmp(
   maxAgeMs = 24 * 60 * 60 * 1000,
 ): Promise<void> {
   const dir = tmpDir();
-  if (!(await fs.pathExists(dir))) return;
+  if (!(await pathExists(dir))) return;
   const cutoff = Date.now() - maxAgeMs;
-  for (const name of await fs.readdir(dir)) {
+  for (const name of await fs.promises.readdir(dir)) {
     const file = path.join(dir, name);
-    const stat = await fs.stat(file).catch(() => null);
-    if (stat && stat.mtimeMs < cutoff) await fs.remove(file).catch(() => {});
+    const stat = await fs.promises.stat(file).catch(() => null);
+    if (stat && stat.mtimeMs < cutoff) await remove(file).catch(() => {});
   }
 }
 
@@ -615,6 +611,9 @@ interface FetchedBaseBundle {
   totalBytes?: number;
 }
 
+/** the head at a recorded bundle location is not the expected bytecode */
+class StaleHeadError extends Error {}
+
 function hasBundleLocation(record: HermesBaseServerRecord): boolean {
   return (
     record.bundleOffset != null &&
@@ -636,7 +635,7 @@ async function saveResponse(
   controller = new AbortController(),
 ): Promise<void> {
   if (!response.body) throw new Error('empty response body');
-  await fs.ensureDir(path.dirname(destination));
+  await ensureDir(path.dirname(destination));
   const abort = () =>
     controller.abort(
       new Error(`download stalled for ${STREAM_IDLE_TIMEOUT_MS / 1000}s`),
@@ -653,7 +652,7 @@ async function saveResponse(
     await pipeline(
       Readable.fromWeb(response.body as any),
       watchdog,
-      fs.createWriteStream(destination),
+      fs.createWriteStream(destination, { start: 0 }),
       { signal: controller.signal },
     );
   } finally {
@@ -676,12 +675,19 @@ async function saveResponse(
  * recorded location is stale, so the directory transport (2) still runs; a
  * mismatch of the entry itself (2, 3) is final — the same bytes would come
  * back however they are fetched — and raises BundleHashMismatchError.
+ *
+ * With `expectHbcVersion` (the server does not know the base's version), the
+ * bundle's first bytes are checked before its body is fetched; a base of
+ * another HBC version, or plain JS, raises HbcVersionMismatchError without
+ * downloading the rest. A head read at a recorded location (1) may be stale,
+ * so only the directory transport (2) decides.
  */
 export async function fetchBaseBundle(
   record: HermesBaseServerRecord,
   artifactType: BaseArtifactType,
   archive: string,
   log: (message: string) => void = () => {},
+  expectHbcVersion?: number,
 ): Promise<FetchedBaseBundle> {
   const matches = bundleEntryMatcher(artifactType);
   const verified = (
@@ -694,29 +700,37 @@ export async function fetchBaseBundle(
     }
     return { bundle, bundleHash };
   };
-  const fromFullResponse = async (
-    response: Response,
-  ): Promise<FetchedBaseBundle> => {
-    await saveResponse(response, archive);
-    return {
-      ...verified(await extractBundleFromArchive(archive)),
-      transport: 'full',
-    };
-  };
+  const fromArchive = async (): Promise<FetchedBaseBundle> => ({
+    ...verified(await extractBundleFromArchive(archive)),
+    transport: 'full',
+  });
   const skip = (reason: string) =>
     log(t('hermesBaseRangeFallback', { reason }));
+  // a 200 to a Range request already carries the whole archive
+  const rangeIgnored = async (response: Response) => {
+    skip('server ignores Range');
+    await saveResponse(response, archive);
+    return fromArchive();
+  };
 
   // harmony .app nests the bundle in a second zip, so a location inside the
   // outer archive is never reported for it
   if (artifactType !== 'app' && hasBundleLocation(record)) {
+    const location = {
+      dataOffset: record.bundleOffset as number,
+      compressedSize: record.bundleCompressedSize as number,
+      compressionMethod: record.bundleCompression as number,
+    };
     try {
+      const headMatches =
+        expectHbcVersion === undefined ||
+        getHbcVersion(
+          await fetchZipEntryHead(record.url, location, HBC_HEADER_SIZE),
+        ) === expectHbcVersion;
+      if (!headMatches) throw new StaleHeadError();
       const { data, fetchedBytes, totalBytes } = await fetchZipEntryData(
         record.url,
-        {
-          dataOffset: record.bundleOffset as number,
-          compressedSize: record.bundleCompressedSize as number,
-          compressionMethod: record.bundleCompression as number,
-        },
+        location,
       );
       return {
         ...verified(data),
@@ -726,10 +740,12 @@ export async function fetchBaseBundle(
       };
     } catch (error: any) {
       if (error instanceof RangeUnsupportedError) {
-        skip('server ignores Range');
-        return fromFullResponse(error.response);
+        return rangeIgnored(error.response);
       }
-      skip(`entry range: ${error?.message ?? error}`);
+      // not a transport failure: the directory read below settles it
+      if (!(error instanceof StaleHeadError)) {
+        skip(`entry range: ${error?.message ?? error}`);
+      }
     }
   }
 
@@ -737,13 +753,23 @@ export async function fetchBaseBundle(
     try {
       const remote = await openRemoteZip(record.url);
       if (remote.kind === 'full') {
-        skip('server ignores Range');
-        return fromFullResponse(remote.response);
+        return rangeIgnored(remote.response);
       }
       const bundle = await readRemoteZipEntry(
         remote.zipFile,
         matches,
         remote.reader,
+        expectHbcVersion === undefined
+          ? undefined
+          : {
+              bytes: HBC_HEADER_SIZE,
+              check: (head) => {
+                const version = getHbcVersion(head);
+                if (version !== expectHbcVersion) {
+                  throw new HbcVersionMismatchError(version, expectHbcVersion);
+                }
+              },
+            },
       );
       return {
         ...verified(bundle),
@@ -753,8 +779,7 @@ export async function fetchBaseBundle(
       };
     } catch (error: any) {
       if (error instanceof RangeUnsupportedError) {
-        skip('server ignores Range');
-        return fromFullResponse(error.response);
+        return rangeIgnored(error.response);
       }
       // the real entry was read and is not the recorded one: final
       if (error instanceof PermanentBaseError) throw error;
@@ -763,15 +788,11 @@ export async function fetchBaseBundle(
   }
 
   await downloadToFile(record.url, archive);
-  return {
-    ...verified(await extractBundleFromArchive(archive)),
-    transport: 'full',
-  };
+  return fromArchive();
 }
 
 export interface ResolveHermesBaseParams {
   option: HermesBaseOption;
-  hermesCommand: string;
   bytecodeVersion: number;
   appId?: string;
   cacheMaxMb?: number;
@@ -846,12 +867,6 @@ export async function resolveHermesBase(
     );
     return null;
   }
-  const source: HermesBaseSelection['source'] =
-    record?.artifactType && record.artifactType !== 'ppk'
-      ? 'native-package'
-      : record?.bytecodeVersion == null
-        ? 'latest-version'
-        : 'download';
   if (!record) {
     log(t('hermesBaseNone', { reason: 'no published version yet' }));
     return null;
@@ -862,7 +877,7 @@ export async function resolveHermesBase(
   ) {
     log(
       t('hermesBaseNone', {
-        reason: `server base is HBC ${record.bytecodeVersion}, need ${bytecodeVersion}`,
+        reason: `server base is ${describeBytecodeVersion(record.bytecodeVersion)}, need ${bytecodeVersion}`,
       }),
     );
     return null;
@@ -870,20 +885,20 @@ export async function resolveHermesBase(
   // 1. cache by bundleHash
   if (record.bundleHash) {
     const hit = await cacheLookup(record.bundleHash);
-    if (hit && record.bytecodeVersion == null) {
-      // the server does not know the HBC version (legacy version, native
-      // package): the download path checks it, the cache path must too
-      const version = await readFileHbcVersion(hit);
-      if (version !== bytecodeVersion) {
-        log(
-          t('hermesBaseNone', {
-            reason: `cached base is HBC ${version ?? 'n/a'}, need ${bytecodeVersion}`,
-          }),
-        );
-        return null;
-      }
-    }
     if (hit) {
+      if (record.bytecodeVersion == null) {
+        // the server does not know the HBC version (legacy version, native
+        // package): the download path checks it, the cache path must too
+        const version = await readFileHbcVersion(hit);
+        if (version !== bytecodeVersion) {
+          log(
+            t('hermesBaseNone', {
+              reason: `cached base is HBC ${version ?? 'n/a'}, need ${bytecodeVersion}`,
+            }),
+          );
+          return null;
+        }
+      }
       log(
         t('hermesBaseUsing', {
           source: `cache ${record.bundleHash.slice(0, 12)}${record.versionId == null ? '' : ` (version ${record.versionId})`}`,
@@ -901,24 +916,34 @@ export async function resolveHermesBase(
     }
   }
   // 2. download, extract, verify, cache — transport errors get a second try
+  const artifactType: BaseArtifactType = ['ppk', 'apk', 'ipa', 'app'].includes(
+    record.artifactType ?? '',
+  )
+    ? (record.artifactType as BaseArtifactType)
+    : 'ppk';
+  const source: HermesBaseSelection['source'] =
+    record.artifactType && record.artifactType !== 'ppk'
+      ? 'native-package'
+      : record.bytecodeVersion == null
+        ? 'latest-version'
+        : 'download';
   for (let attempt = 1; attempt <= 2; attempt++) {
     const dir = tmpDir();
-    await fs.ensureDir(dir);
-    const artifactType: BaseArtifactType = [
-      'ppk',
-      'apk',
-      'ipa',
-      'app',
-    ].includes(record.artifactType ?? '')
-      ? (record.artifactType as BaseArtifactType)
-      : 'ppk';
+    await ensureDir(dir);
     const archive = path.join(
       dir,
       `base-${process.pid}-${Date.now()}-${attempt}.${artifactType}`,
     );
     try {
       log(t('hermesBaseDownloading', { url: record.url }));
-      const fetched = await fetchBaseBundle(record, artifactType, archive, log);
+      const fetched = await fetchBaseBundle(
+        record,
+        artifactType,
+        archive,
+        log,
+        // a server that knows the version already matched it above
+        record.bytecodeVersion == null ? bytecodeVersion : undefined,
+      );
       const { bundle, bundleHash: actualHash } = fetched;
       if (fetched.transport !== 'full') {
         log(
@@ -930,12 +955,7 @@ export async function resolveHermesBase(
       }
       const version = getHbcVersion(bundle);
       if (version !== bytecodeVersion) {
-        log(
-          t('hermesBaseNone', {
-            reason: `downloaded base is HBC ${version ?? 'n/a'}, need ${bytecodeVersion}`,
-          }),
-        );
-        return null;
+        throw new HbcVersionMismatchError(version, bytecodeVersion);
       }
       const cached = await cachePut(bundle, params.cacheMaxMb, actualHash);
       log(
@@ -956,6 +976,10 @@ export async function resolveHermesBase(
         source,
       };
     } catch (error: any) {
+      if (error instanceof HbcVersionMismatchError) {
+        log(t('hermesBaseNone', { reason: error.message }));
+        return null;
+      }
       if (attempt === 2 || error instanceof PermanentBaseError) {
         log(
           t('hermesBaseNone', {
@@ -965,7 +989,7 @@ export async function resolveHermesBase(
         return null;
       }
     } finally {
-      await fs.remove(archive).catch(() => {});
+      await remove(archive).catch(() => {});
     }
   }
   return null;
@@ -1233,15 +1257,6 @@ function isLetter(code: number): boolean {
 }
 
 /** strip one operand-width suffix (LongIndex, Long, Short) off an opcode */
-function foldWidthSuffix(opcode: string): string {
-  for (const suffix of ['LongIndex', 'Long', 'Short']) {
-    if (opcode.length > suffix.length && opcode.endsWith(suffix)) {
-      return opcode.slice(0, -suffix.length);
-    }
-  }
-  return opcode;
-}
-
 /** Split a readable stream into lines without readline (Bun's readline async iterator misbehaves when pulled manually). */
 async function* streamLines(
   stream: NodeJS.ReadableStream,
@@ -1278,7 +1293,7 @@ export interface HermesEquivalenceResult {
   functions: number;
   /**
    * `instruction`: literals decoded from the binary buffers at each
-   * New*WithBuffer instruction (HBC v87–96 and v98); `buffer`: the dumped
+   * New*WithBuffer instruction (HBC v87–96, v98 and v99); `buffer`: the dumped
    * buffers compared as a whole (unknown layout)
    */
   literals?: 'instruction' | 'buffer';
@@ -1314,10 +1329,6 @@ const TRAILER_SECTION = /^(?:Debug |Textified callees table)/;
 const DUMP_STDERR_KEEP = 4 * 1024;
 /** a diagnostic line is cut to this many characters */
 const DETAIL_LINE_MAX = 120;
-
-function isFunctionHeader(line: string): boolean {
-  return /^(?:Function|NCFunction|Constructor)</.test(line);
-}
 
 /**
  * Structured reader over one `hermesc -dump-bytecode -pretty-disassemble`
@@ -1359,7 +1370,9 @@ class DumpReader {
     const pass = (this.pass = new PassThrough());
     proc.stdout!.pipe(pass);
     if (dumpTo) {
-      const output = (this.debugOutput = fs.createWriteStream(dumpTo));
+      const output = (this.debugOutput = fs.createWriteStream(dumpTo, {
+        start: 0,
+      }));
       this.debugFinished = new Promise<void>((resolve) => {
         output.once('finish', resolve);
         output.once('error', (error) => {
@@ -1607,16 +1620,26 @@ export async function compareHermesBytecode(
         killSignal: 'SIGKILL',
       },
     );
-  // The literal buffers are read from both files up front (header + three
-  // byte ranges). Only when both sides can be read do the instructions
-  // compare decoded literals; otherwise both fall back to the dumped buffers
-  // as a whole, so the two sides always normalize the same way.
-  const [buffersA, buffersB, dataA, dataB] = await Promise.all([
-    readLiteralBuffers(withBase).catch(() => null),
-    readLiteralBuffers(plain).catch(() => null),
-    readHermesSemanticData(withBase).catch(() => null),
-    readHermesSemanticData(plain).catch(() => null),
-  ]);
+  // Each file is read once; its literal buffers and semantic data both come
+  // from those bytes. Only when both sides' buffers can be read do the
+  // instructions compare decoded literals; otherwise both fall back to the
+  // dumped buffers as a whole, so the two sides always normalize the same way.
+  const [bytesA, bytesB] = await Promise.all(
+    [withBase, plain].map((file) =>
+      fs.promises.readFile(file).catch(() => null),
+    ),
+  );
+  const orNull = <T>(read: () => T): T | null => {
+    try {
+      return read();
+    } catch {
+      return null;
+    }
+  };
+  const buffersA = bytesA && orNull(() => literalBuffersFromBytes(bytesA));
+  const buffersB = bytesB && orNull(() => literalBuffersFromBytes(bytesB));
+  const dataA = bytesA && orNull(() => hermesSemanticData(bytesA));
+  const dataB = bytesB && orNull(() => hermesSemanticData(bytesB));
   const binary = buffersA && buffersB && buffersA.version === buffersB.version;
   const literals = binary ? 'instruction' : 'buffer';
   const a = new DumpReader(

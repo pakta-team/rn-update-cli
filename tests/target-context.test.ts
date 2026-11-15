@@ -1,3 +1,9 @@
+/**
+ * [INPUT]: 依赖 Bun 测试运行时与 ../src/api、../src/app、../src/bundle、../src/bundle-pack、../src/bundle-runner、../src/utils、../src/utils/add-gitignore、../src/utils/check-lockfile、../src/utils/hermes-base、../src/versions
+ * [OUTPUT]: 验证 app/platform/Hermes 目标上下文
+ * [POS]: tests 的行为回归边界，通过隔离夹具约束对应生产模块
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
 import {
   afterEach,
   beforeEach,

@@ -1,5 +1,5 @@
 /**
- * [INPUT]: 依赖独立 Go API、对象上传、渠道/原生包查询、版本参数契约与本地化文案
+ * [INPUT]: 依赖独立 Go API、对象上传、渠道/原生包查询、hash.sha256File 流式制品指纹与 sha256Hex 幂等键、版本参数契约与本地化文案
  * [OUTPUT]: 对外提供 UpdatePackage/Deployment 上传（含受热更配额校验的 source map 归档）、默认 100% 全量的交互或显式目标解析、准确 ID 重试及逐构建 pdiff 登记
  * [POS]: CLI 独立服务投放编排层；一个包可在多个渠道×原生版本目标上原子保存并发布
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -18,13 +18,18 @@ import {
   unwrapData,
   uploadFile,
 } from './api';
-import { getOrCreateChannel, resolveAppId } from './app';
+import {
+  assertChannelCreatable,
+  findChannel,
+  getOrCreateChannel,
+  resolveAppId,
+} from './app';
 import { choosePackage } from './package';
 import type { Package } from './types';
 import { isNonInteractive, question } from './utils';
+import { sha256File, sha256Hex } from './utils/hash';
 import {
   type HermesBaseMeta,
-  sha256Hex,
   truncateHermesBaseDetail,
 } from './utils/hermes-base';
 import { isStandaloneService } from './utils/http-helper';
@@ -82,17 +87,13 @@ async function chooseStandaloneTarget(
 ): Promise<StandalonePublishTarget> {
   const channels = await getChannels(appId);
   const allPackages = (await getAllPackages(appId)) ?? [];
-  const requestedChannel = String(options.channel || '')
-    .trim()
-    .toLowerCase();
+  const requestedChannel = String(options.channel || '').trim();
   let packages = allPackages;
 
   if (requestedChannel) {
-    const channel = channels.find(
-      (item) =>
-        item.id === requestedChannel ||
-        item.code.trim().toLowerCase() === requestedChannel,
-    );
+    const channel =
+      channels.find((item) => item.id === requestedChannel) ??
+      findChannel(channels, requestedChannel);
     if (!channel) {
       throw new Error(t('channelNotRegistered', { channel: requestedChannel }));
     }
@@ -199,7 +200,6 @@ async function resolveStandaloneTargets(
   dryRun = false,
 ): Promise<StandalonePublishTarget[]> {
   const channels = await getChannels(appId);
-  const byCode = new Map(channels.map((channel) => [channel.code, channel]));
   const byId = new Map(channels.map((channel) => [channel.id, channel]));
   let rawTargets: Array<{
     channel?: string;
@@ -258,46 +258,46 @@ async function resolveStandaloneTargets(
   if (rawTargets.length === 0) {
     throw new Error(t('targetsRequired'));
   }
-  return Promise.all(
-    rawTargets.map(async (target) => {
-      const rawChannel = target.channel || options.channel || 'default';
-      let channel = target.channelId
-        ? byId.get(target.channelId)
-        : byCode.get(rawChannel.trim().toLowerCase());
-      if (!channel && !target.channelId && !dryRun) {
-        const resolved = await getOrCreateChannel(appId, rawChannel);
-        channel = resolved.channel;
-        if (resolved.created) {
-          console.log(
-            t('channelAutoCreated', {
-              channel: rawChannel.trim().toLowerCase(),
-            }),
-          );
-        }
-      }
-      if (!channel) {
-        throw new Error(
-          t('channelNotRegistered', {
-            channel:
-              target.channelId ||
-              target.channel ||
-              options.channel ||
-              'default',
-          }),
-        );
-      }
-      const packageVersion = String(
-        target.packageVersion || options.packageVersion || '',
-      ).trim();
-      if (!packageVersion) {
-        throw new Error(t('standalonePackageVersionRequired'));
-      }
-      const targetRollout = resolveTargetRollout(
-        target.rollout === undefined ? options.rollout : target.rollout,
+  const planned = rawTargets.map((target) => {
+    const rawChannel = target.channel || options.channel || 'default';
+    const channel = target.channelId
+      ? byId.get(target.channelId)
+      : findChannel(channels, rawChannel);
+    if (!channel && (target.channelId || dryRun)) {
+      throw new Error(
+        t('channelNotRegistered', {
+          channel:
+            target.channelId || target.channel || options.channel || 'default',
+        }),
       );
-      return { channelId: channel.id, packageVersion, rollout: targetRollout };
-    }),
-  );
+    }
+    const packageVersion = String(
+      target.packageVersion || options.packageVersion || '',
+    ).trim();
+    if (!packageVersion) {
+      throw new Error(t('standalonePackageVersionRequired'));
+    }
+    const targetRollout = resolveTargetRollout(
+      target.rollout === undefined ? options.rollout : target.rollout,
+    );
+    if (!channel) assertChannelCreatable(rawChannel);
+    return { channel, rawChannel, packageVersion, rollout: targetRollout };
+  });
+  const targets: StandalonePublishTarget[] = [];
+  for (const target of planned) {
+    const resolved = target.channel
+      ? { channel: target.channel, created: false }
+      : await getOrCreateChannel(appId, target.rawChannel);
+    if (resolved.created) {
+      console.log(t('channelAutoCreated', { channel: resolved.channel.code }));
+    }
+    targets.push({
+      channelId: resolved.channel.id,
+      packageVersion: target.packageVersion,
+      rollout: target.rollout,
+    });
+  }
+  return targets;
 }
 
 export async function publishStandalone(
@@ -308,6 +308,12 @@ export async function publishStandalone(
   const nonInteractive =
     getBooleanOption(options, 'no-interactive', false) || isNonInteractive();
   const hasExplicitTargets = hasStandaloneTargetSelection(options);
+  if (!hasExplicitTargets && options.channel) {
+    const channels = await getChannels(appId);
+    if (!channels.some((channel) => channel.id === options.channel)) {
+      findChannel(channels, options.channel);
+    }
+  }
   let targets: StandalonePublishTarget[] | undefined;
   if (hasExplicitTargets || options.dryRun) {
     targets = await resolveStandaloneTargets(
@@ -324,7 +330,7 @@ export async function publishStandalone(
     return String(options.name || 'dry-run');
   }
 
-  const hash = sha256Hex(fs.readFileSync(fn));
+  const hash = await sha256File(fn);
   const sourcemapPath =
     typeof options.sourcemap === 'string' && options.sourcemap.trim()
       ? options.sourcemap.trim()
@@ -369,9 +375,9 @@ export async function publishStandalone(
       (nonInteractive ? '' : await question(t('versionMetaInfoQuestion')));
     try {
       const [uploaded, sourceMapUpload] = await Promise.all([
-        uploadFile(fn, undefined, appId),
+        uploadFile(fn, appId),
         uploadSourcemapPath
-          ? uploadFile(uploadSourcemapPath, undefined, appId)
+          ? uploadFile(uploadSourcemapPath, appId)
           : Promise.resolve(undefined),
       ]);
       const fullKey = uploaded.key || uploaded.hash;
@@ -599,7 +605,7 @@ export async function retryStandalonePublish(
       packageVersion,
       rollout,
       forceBoot,
-      revision,
+      expectedRevision: revision,
       action: 'publish',
     }),
   );
@@ -696,7 +702,7 @@ export async function registerStandalonePdiff(
     return deploymentId;
   }
 
-  const uploaded = await uploadFile(filePath, undefined, appId);
+  const uploaded = await uploadFile(filePath, appId);
   const key = uploaded.key || uploaded.hash;
   const response = await put(
     servicePath(

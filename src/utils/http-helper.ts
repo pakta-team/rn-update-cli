@@ -7,23 +7,6 @@
 import { defaultEndpoints } from './constants';
 import { runtimeFetch } from './runtime';
 
-export function promiseAny<T>(promises: Promise<T>[]) {
-  return new Promise<T>((resolve, reject) => {
-    let count = 0;
-
-    for (const promise of promises) {
-      Promise.resolve(promise)
-        .then(resolve)
-        .catch(() => {
-          count++;
-          if (count === promises.length) {
-            reject(new Error('All promises were rejected'));
-          }
-        });
-    }
-  });
-}
-
 export const ping = async (url: string, signal?: AbortSignal) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

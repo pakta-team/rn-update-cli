@@ -17,17 +17,15 @@ import {
 import { getHbcVersion } from '../src/utils/hbcTransform';
 import { probeHbcVersion } from '../src/utils/hermes-base';
 
-// Same discovery as hermes-base.test.ts: HERMESC env or the SDK repo's hermesc.
+// -- 与 hermes-base.test.ts 一致，只消费显式 HERMESC 或本仓库编译器 --
 const HERMESC_CANDIDATES = [
-  path.resolve(
-    __dirname,
-    '../../rn-update/Example/testHotUpdate/node_modules/hermes-compiler/hermesc/osx-bin/hermesc',
-  ),
-  path.resolve(
-    __dirname,
-    '../../rn-update/.e2e-rn077-oldarch/AwesomeProject/node_modules/react-native/sdks/hermesc/osx-bin/hermesc',
-  ),
-];
+  '../node_modules/react-native/sdks/hermesc/linux64-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/osx-bin/hermesc',
+  '../node_modules/react-native/sdks/hermesc/win64-bin/hermesc.exe',
+  '../node_modules/hermes-compiler/hermesc/linux64-bin/hermesc',
+  '../node_modules/hermes-compiler/hermesc/osx-bin/hermesc',
+  '../node_modules/hermes-compiler/hermesc/win64-bin/hermesc.exe',
+].map((p) => path.resolve(__dirname, p));
 const hermesc =
   process.env.HERMESC || HERMESC_CANDIDATES.find((p) => fs.existsSync(p));
 const hasHermesc = Boolean(hermesc) && fs.existsSync(hermesc!);

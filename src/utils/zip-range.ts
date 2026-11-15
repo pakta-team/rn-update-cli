@@ -13,18 +13,17 @@
 // `openRemoteZip` read just the bundle of a remote archive through HTTP Range
 // requests instead of downloading the whole ppk / apk / ipa. Every helper
 // throws on anything unexpected; callers fall back to a full download.
-import fs from 'fs-extra';
+import fs from 'fs';
 import { PassThrough, Readable } from 'stream';
 import {
   type Entry,
   fromRandomAccessReader,
-  open as openZipFile,
   RandomAccessReader,
   type ZipFile,
 } from 'yauzl';
-import { inflateRawSync } from 'zlib';
+import { inflateRawSync, constants as zlibConstants } from 'zlib';
 import { webFetch } from './runtime';
-import { readEntry } from './zip-entries';
+import { openFirstEntry, readEntry } from './zip-entries';
 
 export const ZIP_STORED = 0;
 export const ZIP_DEFLATED = 8;
@@ -40,6 +39,11 @@ const TAIL_BYTES = 22 + 0xffff + 20;
 const CHUNK_BYTES = 64 * 1024;
 /** extra bytes past a hinted entry, covering a longer local extra field */
 const HINT_SLACK_BYTES = 4 * 1024;
+/**
+ * compressed bytes fetched to decode the head of a deflated entry: the
+ * dynamic Huffman header plus the first literals fit comfortably
+ */
+const HEAD_PROBE_BYTES = 4 * 1024;
 
 export interface ZipEntryLocation {
   fileName: string;
@@ -82,15 +86,42 @@ export async function readZipEntryWithLocation(
   return { data, location: await locationOfEntry(zipPath, found.entry) };
 }
 
+/** Where an entry's data starts, from its local file header at `headerOffset`. */
+function dataOffsetFromLocalHeader(header: Buffer, headerOffset: number) {
+  if (header.readUInt32LE(0) !== LOCAL_HEADER_SIGNATURE) {
+    throw new Error('invalid local file header signature');
+  }
+  // fixed header, then the file name and extra field lengths it declares
+  return (
+    headerOffset +
+    LOCAL_HEADER_SIZE +
+    header.readUInt16LE(26) +
+    header.readUInt16LE(28)
+  );
+}
+
+function assertValidLocation({
+  dataOffset,
+  compressedSize,
+}: Pick<ZipEntryLocation, 'dataOffset' | 'compressedSize'>) {
+  if (
+    !Number.isInteger(dataOffset) ||
+    !Number.isInteger(compressedSize) ||
+    dataOffset < 0 ||
+    compressedSize <= 0
+  ) {
+    throw new Error('invalid bundle location');
+  }
+}
+
 async function locationOfEntry(
   zipPath: string,
   entry: Entry,
 ): Promise<ZipEntryLocation> {
   const header = Buffer.alloc(LOCAL_HEADER_SIZE);
-  const fd = await fs.open(zipPath, 'r');
+  const handle = await fs.promises.open(zipPath, 'r');
   try {
-    const { bytesRead } = await fs.read(
-      fd,
+    const { bytesRead } = await handle.read(
       header,
       0,
       LOCAL_HEADER_SIZE,
@@ -100,64 +131,18 @@ async function locationOfEntry(
       throw new Error('truncated local file header');
     }
   } finally {
-    await fs.close(fd);
+    await handle.close();
   }
-  if (header.readUInt32LE(0) !== LOCAL_HEADER_SIGNATURE) {
-    throw new Error('invalid local file header signature');
-  }
-  const fileNameLength = header.readUInt16LE(26);
-  const extraFieldLength = header.readUInt16LE(28);
   return {
     fileName: entry.fileName,
-    dataOffset:
-      entry.relativeOffsetOfLocalHeader +
-      LOCAL_HEADER_SIZE +
-      fileNameLength +
-      extraFieldLength,
+    dataOffset: dataOffsetFromLocalHeader(
+      header,
+      entry.relativeOffsetOfLocalHeader,
+    ),
     compressedSize: entry.compressedSize,
     uncompressedSize: entry.uncompressedSize,
     compressionMethod: entry.compressionMethod,
   };
-}
-
-/** Open a local zip and stop at the first matching entry (caller closes). */
-function openFirstEntry(
-  zipPath: string,
-  matches: (name: string) => boolean,
-): Promise<{ zipFile: ZipFile; entry: Entry } | null> {
-  return new Promise((resolve, reject) => {
-    openZipFile(
-      zipPath,
-      { lazyEntries: true, autoClose: false },
-      (err, zipFile) => {
-        if (err) return reject(err);
-        let settled = false;
-        zipFile.on('error', (error) => {
-          if (!settled) {
-            settled = true;
-            reject(error);
-          }
-        });
-        zipFile.on('end', () => {
-          if (!settled) {
-            settled = true;
-            zipFile.close();
-            resolve(null);
-          }
-        });
-        zipFile.on('entry', (entry: Entry) => {
-          if (settled) return;
-          if (matches(entry.fileName)) {
-            settled = true;
-            resolve({ zipFile, entry });
-            return;
-          }
-          zipFile.readEntry();
-        });
-        zipFile.readEntry();
-      },
-    );
-  });
 }
 
 /**
@@ -206,10 +191,11 @@ function timeoutFor(bytes: number, options: RangeOptions): number {
   if (bytes <= CHUNK_BYTES) {
     return options.headerTimeoutMs ?? DEFAULT_HEADER_TIMEOUT_MS;
   }
-  return (
+  // AbortSignal.timeout() rejects a fractional delay
+  return Math.ceil(
     (options.dataTimeoutMs ?? DEFAULT_DATA_TIMEOUT_MS) +
-    ((options.dataTimeoutPerMbMs ?? DEFAULT_DATA_TIMEOUT_PER_MB_MS) * bytes) /
-      (1024 * 1024)
+      ((options.dataTimeoutPerMbMs ?? DEFAULT_DATA_TIMEOUT_PER_MB_MS) * bytes) /
+        (1024 * 1024),
   );
 }
 
@@ -346,14 +332,7 @@ export async function fetchZipEntryData(
   if (compressionMethod !== ZIP_STORED && compressionMethod !== ZIP_DEFLATED) {
     throw new Error(`unsupported compression method ${compressionMethod}`);
   }
-  if (
-    !Number.isInteger(dataOffset) ||
-    !Number.isInteger(compressedSize) ||
-    dataOffset < 0 ||
-    compressedSize <= 0
-  ) {
-    throw new Error('invalid bundle location');
-  }
+  assertValidLocation(location);
   const { data, total } = await fetchRangeBuffer(
     url,
     dataOffset,
@@ -365,6 +344,58 @@ export async function fetchZipEntryData(
     fetchedBytes: compressedSize,
     totalBytes: total,
   };
+}
+
+/**
+ * Up to `bytes` leading bytes of an entry, decoded from a prefix of its
+ * compressed data (a truncated deflate stream is inflated as far as it goes).
+ */
+export function decodeEntryHead(
+  raw: Buffer,
+  compressionMethod: number,
+  bytes: number,
+): Buffer {
+  if (compressionMethod === ZIP_STORED) return raw.subarray(0, bytes);
+  if (compressionMethod !== ZIP_DEFLATED) {
+    throw new Error(`unsupported compression method ${compressionMethod}`);
+  }
+  return inflateRawSync(raw, {
+    finishFlush: zlibConstants.Z_SYNC_FLUSH,
+  }).subarray(0, bytes);
+}
+
+/** compressed bytes needed to decode the first `bytes` of an entry */
+function headProbeSize(
+  compressedSize: number,
+  compressionMethod: number,
+  bytes: number,
+): number {
+  return Math.min(
+    compressedSize,
+    compressionMethod === ZIP_STORED ? bytes : HEAD_PROBE_BYTES,
+  );
+}
+
+/**
+ * The first `bytes` of an entry whose compressed bytes are already located,
+ * from one small Range request (see `fetchZipEntryData`).
+ */
+export async function fetchZipEntryHead(
+  url: string,
+  location: Pick<
+    ZipEntryLocation,
+    'dataOffset' | 'compressedSize' | 'compressionMethod'
+  >,
+  bytes: number,
+  options: RangeOptions = {},
+): Promise<Buffer> {
+  const { dataOffset, compressedSize, compressionMethod } = location;
+  assertValidLocation(location);
+  const size = headProbeSize(compressedSize, compressionMethod, bytes);
+  const { data } = await fetchRangeBuffer(url, dataOffset, dataOffset + size, {
+    timeoutMs: timeoutFor(size, options),
+  });
+  return decodeEntryHead(data, compressionMethod, bytes);
 }
 
 export interface HttpRangeReaderOptions extends RangeOptions {
@@ -700,14 +731,62 @@ export async function openRemoteZip(
   return { kind: 'zip', zipFile, reader };
 }
 
+/** `reader.read` as a promise */
+function readAt(
+  reader: HttpRangeReader,
+  position: number,
+  length: number,
+): Promise<Buffer> {
+  const buffer = Buffer.alloc(length);
+  return new Promise((resolve, reject) =>
+    reader.read(buffer, 0, length, position, (error) =>
+      error ? reject(error) : resolve(buffer),
+    ),
+  );
+}
+
+/** The first `bytes` of `entry`, read through `reader` without its body. */
+async function remoteEntryHead(
+  reader: HttpRangeReader,
+  entry: Entry,
+  bytes: number,
+): Promise<Buffer> {
+  const start = entry.relativeOffsetOfLocalHeader;
+  const dataOffset = dataOffsetFromLocalHeader(
+    await readAt(reader, start, LOCAL_HEADER_SIZE),
+    start,
+  );
+  const size = headProbeSize(
+    entry.compressedSize,
+    entry.compressionMethod,
+    bytes,
+  );
+  if (size <= 0) return Buffer.alloc(0);
+  return decodeEntryHead(
+    await readAt(reader, dataOffset, size),
+    entry.compressionMethod,
+    bytes,
+  );
+}
+
+/** Look at the head of the matched entry before its body is fetched. */
+export interface EntryHeadCheck {
+  bytes: number;
+  /** throw to abandon the entry; the error is passed on as is */
+  check: (head: Buffer) => void;
+}
+
 /**
  * Read the first matching entry of an opened remote zip, then close it. With
- * `reader` given, the entry's header and data are fetched in one request.
+ * `reader` given, the entry's header and data are fetched in one request —
+ * or, with `head` too, its first bytes are checked first (header and head
+ * share one small request, the rest of the body follows only if they pass).
  */
 export function readRemoteZipEntry(
   zipFile: ZipFile,
   matches: (name: string) => boolean,
   reader?: HttpRangeReader,
+  head?: EntryHeadCheck,
 ): Promise<Buffer | null> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -724,11 +803,17 @@ export function readRemoteZipEntry(
         zipFile.readEntry();
         return;
       }
-      reader?.hintEntry(entry);
-      readEntry(entry, zipFile).then(
-        (data) => finish(null, data),
-        (error) => finish(error),
-      );
+      const probe =
+        reader && head
+          ? remoteEntryHead(reader, entry, head.bytes).then(head.check)
+          : // without a probe the header read may take the body along
+            Promise.resolve(reader?.hintEntry(entry));
+      probe
+        .then(() => readEntry(entry, zipFile))
+        .then(
+          (data) => finish(null, data),
+          (error) => finish(error),
+        );
     });
     zipFile.readEntry();
   });

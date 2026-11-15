@@ -1,6 +1,6 @@
 /**
  * [INPUT]: 依赖版本发布编排、standalone UpdatePackage/Deployment API 与 Bun mock
- * [OUTPUT]: 验证旧版发布、standalone 投放、Hermes 校验结果上报与版本筛选
+ * [OUTPUT]: 验证旧版发布、standalone 流式制品指纹/去重复用/读取失败零写入、投放、Hermes 校验结果上报与版本筛选
  * [POS]: CLI versions/standalone-publish 的发布契约回归防线，不连接真实服务
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
@@ -25,6 +25,7 @@ import * as app from '../src/app';
 import { publishStandalone } from '../src/standalone-publish';
 import * as utils from '../src/utils';
 import * as git from '../src/utils/git';
+import { sha256Hex } from '../src/utils/hash';
 import {
   bindVersionToPackages,
   normalizeDeps,
@@ -248,7 +249,7 @@ describe('versionCommands.publish', () => {
 
     expect(getSelectedAppSpy).not.toHaveBeenCalled();
     expect(appGetSpy).toHaveBeenCalledWith('/app/777');
-    expect(uploadFileSpy).toHaveBeenCalledWith('bundle.ppk', undefined, '777');
+    expect(uploadFileSpy).toHaveBeenCalledWith('bundle.ppk', '777');
     expect(postSpy).toHaveBeenCalledWith(
       '/app/777/version/create',
       expect.any(Object),
@@ -401,7 +402,6 @@ describe('standalone interactive publish', () => {
     expect(packageId).toBe(updatePackageId);
     expect(uploadFileSpy).toHaveBeenCalledWith(
       path.join(tempDir, 'bundle.ppk'),
-      undefined,
       appId,
     );
     expect(questionSpy).toHaveBeenCalledTimes(5);
@@ -442,6 +442,60 @@ describe('standalone interactive publish', () => {
         ],
       }),
     );
+  });
+
+  test('streams the full artifact hash without whole-file reads', async () => {
+    const file = path.join(tempDir, 'bundle.ppk');
+    const bytes = Buffer.alloc(256 * 1024 + 17, 0xa5);
+    fs.writeFileSync(file, bytes);
+    const expectedHash = sha256Hex(bytes);
+    const readFileSync = fs.readFileSync;
+    const readSpy = spyOn(fs, 'readFileSync').mockImplementation(
+      (...args: Parameters<typeof fs.readFileSync>) => {
+        if (args[0] === file) throw new Error('whole-file read forbidden');
+        return readFileSync(...args);
+      },
+    );
+    try {
+      await withInteractiveStdin(() => publishStandalone(file, appId, {}));
+      expect(postSpy).toHaveBeenCalledWith(
+        `/admin/api/v1/apps/${appId}/update-packages`,
+        expect.objectContaining({ hash: expectedHash }),
+      );
+      expect(readSpy.mock.calls.some(([target]) => target === file)).toBe(
+        false,
+      );
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  test('reuses an existing package by the same raw-byte SHA-256 without upload', async () => {
+    const hash = sha256Hex('interactive-ppk');
+    getSpy.mockResolvedValue({
+      data: { items: [{ id: updatePackageId, hash }], total: 1 },
+    });
+    questionSpy.mockResolvedValue('n');
+
+    const packageId = await withInteractiveStdin(() =>
+      publishStandalone(path.join(tempDir, 'bundle.ppk'), appId, {}),
+    );
+
+    expect(packageId).toBe(updatePackageId);
+    expect(uploadFileSpy).not.toHaveBeenCalled();
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test('a missing artifact fails before any upload or package write', async () => {
+    await expect(
+      withInteractiveStdin(() =>
+        publishStandalone(path.join(tempDir, 'missing.ppk'), appId, {}),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(uploadFileSpy).not.toHaveBeenCalled();
+    expect(postSpy).not.toHaveBeenCalled();
   });
 
   test('keeps Hermes verification outcome out of opaque metaInfo', async () => {

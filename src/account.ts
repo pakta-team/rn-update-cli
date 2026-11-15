@@ -1,17 +1,17 @@
 /**
- * [INPUT]: 依赖 api 的 getSession/getApiToken、child_process 的 fork、crypto 的 createHash、constants 的 pricingPageUrl 与 i18n 的 t
+ * [INPUT]: 依赖 api 的 getSession/getApiToken、child_process 的 fork、hash 的 sha256Hex、constants 的 pricingPageUrl 与 i18n 的 t
  * [OUTPUT]: 对外提供 AccountInfo 类型、printAccountInfo 账号摘要打印、accountCacheFile 缓存路径与 showCurrentAccount 缓存优先后台刷新
  * [POS]: CLI 账号状态展示层，被 bin（命令前置提醒）与 user.me（显式查询）消费；网络请求下沉到 account-worker 隔离进程
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 import chalk from 'chalk';
 import { fork } from 'child_process';
-import { createHash } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { getApiToken, getSession } from './api';
 import { pricingPageUrl } from './utils/constants';
+import { sha256Hex } from './utils/hash';
 import { t } from './utils/i18n';
 
 export interface AccountInfo {
@@ -60,9 +60,7 @@ interface AccountCache {
 }
 
 export function accountCacheFile(token: string, apiToken = '') {
-  const key = createHash('sha256')
-    .update(JSON.stringify([process.cwd(), token, apiToken]))
-    .digest('hex');
+  const key = sha256Hex(JSON.stringify([process.cwd(), token, apiToken]));
   return path.join(
     os.homedir(),
     '.cache',

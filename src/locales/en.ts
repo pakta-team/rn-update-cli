@@ -278,6 +278,10 @@ This can reduce the risk of inconsistent dependencies and supply chain attacks.
   channelAssertionFailed:
     'Channel assertion failed: the package contains {{channel}}, but --channel is {{requestedChannel}}. --channel cannot override the package channel.',
   channelCodeRequired: 'Channel code cannot be empty.',
+  channelAmbiguous:
+    'Channel {{channel}} matches multiple registered identities. Specify an exact code or channelId.',
+  channelIdentityCannotCreate:
+    'Cannot auto-create channel {{channel}} without changing its identity: the service only creates lowercase codes. Register the intended identity explicitly.',
   channelHasNoNativePackages:
     'Channel {{channel}} has no native packages available to bind.',
   channelNotRegistered: 'Channel {{channel}} is not registered for this app.',

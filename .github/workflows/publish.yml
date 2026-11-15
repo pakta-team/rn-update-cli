@@ -1,5 +1,5 @@
 # [INPUT]: 依赖 Git tag、GitHub CLI、Bun/Node/npm 与 npm OIDC
-# [OUTPUT]: 校验、构建 rn-update-cli，自动生成 GitHub Release 并发布到 npm
+# [OUTPUT]: 校验、构建 rn-update-cli，发布到 npm 成功后生成 GitHub Release
 # [POS]: 独立公开 CLI 仓库的发布闸门；手动推送 tag 是唯一版本入口
 # [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Existing tag to publish, for example v1.1.1'
+        description: 'Existing tag to publish, for example v1.2.0'
         required: true
         type: string
 
@@ -37,9 +37,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.release_tag || github.ref_name }}
+          ref: refs/tags/${{ inputs.release_tag || github.ref_name }}
 
       - uses: oven-sh/setup-bun@v2
+
+      - name: Set up Node.js for build
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24.x'
 
       - run: bun install --frozen-lockfile
 
@@ -70,12 +75,8 @@ jobs:
 
       - name: Verify built CLI with Node.js 18
         run: |
-          node --version
-          node lib/bin.js -v
-          # the programmatic entry points must also load on the minimum
-          # supported Node, not only the CLI banner
-          node -e "const m = require('./lib/exports.js'); if (!m) process.exit(1)"
-          node -e "const d = require('./lib/diff.js'); if (!d.diffCommands) process.exit(1)"
+          node -e 'if (process.version !== "v18.17.0") throw new Error("unexpected Node version");'
+          node scripts/smoke-lib.js
 
       - name: Set up Node.js for npm publishing
         uses: actions/setup-node@v7
@@ -85,6 +86,17 @@ jobs:
 
       - name: Verify publishable package contents
         run: npm pack --dry-run --ignore-scripts
+
+      - name: Publish to npm
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            npm publish --ignore-scripts --provenance --access public --tag beta
+          else
+            npm publish --ignore-scripts --provenance --access public
+          fi
 
       - name: Create GitHub Release from tag
         shell: bash
@@ -105,14 +117,3 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             "${RELEASE_ARGS[@]}"
-
-      - name: Publish to npm
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ env.RELEASE_TAG }}
-        run: |
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            npm publish --ignore-scripts --provenance --access public --tag beta
-          else
-            npm publish --ignore-scripts --provenance --access public
-          fi

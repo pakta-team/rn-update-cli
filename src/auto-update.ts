@@ -1,5 +1,5 @@
 /**
- * [INPUT]: 依赖 Node 子进程、文件系统、环境变量、全局包管理器布局与本地化文案
+ * [INPUT]: 依赖 Node 子进程、文件系统、fs-helpers 缓存目录、options 环境开关与 runtime 包管理器类型
  * [OUTPUT]: 对外提供 PackageManager、AutoUpdateNotice、全局包管理器探测及后台更新编排
  * [POS]: CLI 后台自更新边界，负责包管理器归属、锁与失败重试，不参与前台命令分发
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -18,10 +18,12 @@ import {
   statSync,
   writeFileSync,
 } from 'fs';
-import { homedir } from 'os';
 import path from 'path';
+import { userCacheDir } from './utils/fs-helpers';
+import { isTruthyEnv } from './utils/options';
+import type { PackageManager } from './utils/runtime';
 
-export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
+export type { PackageManager } from './utils/runtime';
 
 interface AutoUpdateCandidate {
   currentVersion: string;
@@ -68,21 +70,7 @@ const PERMISSION_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
 const OUTPUT_LIMIT = 32 * 1024;
 
 function cacheDir(): string {
-  if (process.env.XDG_CACHE_HOME) {
-    return path.join(process.env.XDG_CACHE_HOME, PACKAGE_NAME);
-  }
-  switch (process.platform) {
-    case 'darwin':
-      return path.join(homedir(), 'Library', 'Caches', PACKAGE_NAME);
-    case 'win32':
-      return path.join(
-        process.env.LOCALAPPDATA ?? path.join(homedir(), 'AppData', 'Local'),
-        PACKAGE_NAME,
-        'Cache',
-      );
-    default:
-      return path.join(homedir(), '.cache', PACKAGE_NAME);
-  }
+  return userCacheDir(PACKAGE_NAME);
 }
 
 function stateFile(): string {
@@ -325,13 +313,11 @@ function inferNpmPrefix(
 function isDisabled(env: NodeJS.ProcessEnv): boolean {
   const disabled = (value: string | undefined) =>
     value === '0' || value?.toLowerCase() === 'false';
-  const enabled = (value: string | undefined) =>
-    value === '1' || value?.toLowerCase() === 'true';
   return (
     disabled(env.RNU_AUTO_UPDATE) ||
-    enabled(env.RNU_DISABLE_AUTO_UPDATE) ||
-    enabled(env.NO_UPDATE_NOTIFIER) ||
-    enabled(env.CI)
+    isTruthyEnv(env.RNU_DISABLE_AUTO_UPDATE) ||
+    isTruthyEnv(env.NO_UPDATE_NOTIFIER) ||
+    isTruthyEnv(env.CI)
   );
 }
 

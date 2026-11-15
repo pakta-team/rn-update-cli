@@ -4,16 +4,26 @@
  * [POS]: CLI 原生制品预处理层，只保留热更新基线所需的 JS bundle 与资源，供 package 登记和 pdiff 使用
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
-import * as fs from 'fs-extra';
+
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { Readable } from 'stream';
+import { promisify } from 'util';
 import {
   type Entry,
   open as openZipFile,
   type ZipFile as YauzlZipFile,
 } from 'yauzl';
-import { ZipFile as YazlZipFile } from 'yazl';
+import zlib from 'zlib';
 import type { Platform } from './types';
+import { ensureDir, remove } from './utils/fs-helpers';
+import {
+  createOutputZip,
+  openEntryStream,
+  readEntry,
+  writeEntry,
+} from './utils/zip-entries';
 import { fitsRawZip, RawZipWriter } from './utils/zip-raw-writer';
 
 export type NativePackageEntry = {
@@ -73,9 +83,22 @@ export function resolveNativePackageEntry(
   return nativePackageRules[platform].resolveEntry(entryName);
 }
 
+/**
+ * Entries kept for the server only: it maps resource names to their (shortened)
+ * paths through resources.arsc when building a package diff. They are never a
+ * diff origin, so they stay out of resolveNativePackageEntry.
+ */
+const serverOnlyEntries: Partial<Record<Platform, string>> = {
+  android: 'resources.arsc',
+};
+
+const deflateRaw = promisify(zlib.deflateRaw);
+
 /** Where the kept entries go: a raw copy (default) or a yazl repack. */
 interface SlimSink {
   copyEntry(sourceZip: YauzlZipFile, entry: Entry): Promise<void>;
+  /** like copyEntry, but an entry the source stores uncompressed is deflated */
+  copyEntryDeflated(sourceZip: YauzlZipFile, entry: Entry): Promise<void>;
   /** add a local file under `fileName`, dated like `like` */
   addFile(filePath: string, fileName: string, like: Entry): Promise<void>;
   end(): Promise<void>;
@@ -92,22 +115,32 @@ class RawCopySink implements SlimSink {
   constructor(output: string) {
     this.writer = new RawZipWriter(output);
   }
-  copyEntry(sourceZip: YauzlZipFile, entry: Entry): Promise<void> {
-    return new Promise((resolve, reject) => {
-      sourceZip.openReadStream(
-        entry,
-        { decodeFileData: false },
-        (error, readStream) => {
-          if (error || !readStream) {
-            reject(
-              error ?? new Error(`Unable to read zip entry: ${entry.fileName}`),
-            );
-            return;
-          }
-          this.writer.addRawEntry(entry, readStream).then(resolve, reject);
-        },
-      );
+  async copyEntry(sourceZip: YauzlZipFile, entry: Entry): Promise<void> {
+    const readStream = await openEntryStream(entry, sourceZip, {
+      decodeFileData: false,
     });
+    await this.writer.addRawEntry(entry, readStream);
+  }
+  async copyEntryDeflated(
+    sourceZip: YauzlZipFile,
+    entry: Entry,
+  ): Promise<void> {
+    if (entry.compressionMethod !== 0) {
+      return this.copyEntry(sourceZip, entry);
+    }
+    const deflated = await deflateRaw(await readEntry(entry, sourceZip), {
+      level: zlib.constants.Z_BEST_COMPRESSION,
+    });
+    await this.writer.addRawEntry(
+      {
+        ...entry,
+        compressionMethod: 8,
+        compressedSize: deflated.length,
+        // deflate strength bits of a stored entry mean nothing
+        generalPurposeBitFlag: 0,
+      },
+      Readable.from([deflated]),
+    );
   }
   addFile(filePath: string, fileName: string, like: Entry): Promise<void> {
     // a nested slim archive is a zip of deflated entries: storing it as-is
@@ -124,32 +157,28 @@ class RawCopySink implements SlimSink {
 
 /** Re-deflates every kept entry through yazl; only for sources that need zip64. */
 class RepackSink implements SlimSink {
-  private readonly outputZip = new YazlZipFile();
-  private readonly writePromise: Promise<void>;
-  constructor(readonly output: string) {
-    this.writePromise = new Promise<void>((resolve, reject) => {
-      this.outputZip.outputStream.once('error', reject);
-      this.outputZip.outputStream
-        .pipe(fs.createWriteStream(output))
-        .once('error', reject)
-        .once('close', () => resolve());
-    });
+  private readonly output: ReturnType<typeof createOutputZip>;
+  constructor(output: string) {
+    this.output = createOutputZip(output);
   }
   copyEntry(sourceZip: YauzlZipFile, entry: Entry): Promise<void> {
-    return new Promise((resolve, reject) => {
-      sourceZip.openReadStream(entry, (error, readStream) => {
-        if (error || !readStream) {
-          reject(
-            error ?? new Error(`Unable to read zip entry: ${entry.fileName}`),
-          );
-          return;
-        }
-        readStream.once('error', reject);
-        readStream.once('end', () => resolve());
-        this.outputZip.addReadStream(readStream, entry.fileName, {
-          compress: entry.compressionMethod !== 0,
-          mtime: entry.getLastModDate(),
-        });
+    return this.add(sourceZip, entry, entry.compressionMethod !== 0);
+  }
+  copyEntryDeflated(sourceZip: YauzlZipFile, entry: Entry): Promise<void> {
+    return this.add(sourceZip, entry, true);
+  }
+  private async add(
+    sourceZip: YauzlZipFile,
+    entry: Entry,
+    compress: boolean,
+  ): Promise<void> {
+    const readStream = await openEntryStream(entry, sourceZip);
+    await new Promise<void>((resolve, reject) => {
+      readStream.once('error', reject);
+      readStream.once('end', () => resolve());
+      this.output.zipfile.addReadStream(readStream, entry.fileName, {
+        compress,
+        mtime: entry.getLastModDate(),
       });
     });
   }
@@ -158,19 +187,17 @@ class RepackSink implements SlimSink {
     fileName: string,
     like: Entry,
   ): Promise<void> {
-    this.outputZip.addFile(filePath, fileName, {
+    this.output.zipfile.addFile(filePath, fileName, {
       compress: like.compressionMethod !== 0,
       mtime: like.getLastModDate(),
     });
   }
   async end(): Promise<void> {
-    this.outputZip.end();
-    await this.writePromise;
+    this.output.zipfile.end();
+    await this.output.writePromise;
   }
-  async abort(): Promise<void> {
-    this.outputZip.end();
-    await this.writePromise.catch(() => {});
-    await fs.remove(this.output).catch(() => {});
+  abort(): Promise<void> {
+    return this.output.abort();
   }
 }
 
@@ -186,31 +213,6 @@ function openZip(source: string): Promise<YauzlZipFile> {
   });
 }
 
-function extractEntryToFile(
-  sourceZip: YauzlZipFile,
-  entry: Entry,
-  outputPath: string,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    sourceZip.openReadStream(entry, (error, readStream) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      if (!readStream) {
-        reject(new Error(`Unable to read zip entry: ${entry.fileName}`));
-        return;
-      }
-
-      const writeStream = fs.createWriteStream(outputPath);
-      readStream.once('error', reject);
-      writeStream.once('error', reject);
-      writeStream.once('close', () => resolve());
-      readStream.pipe(writeStream);
-    });
-  });
-}
-
 export interface SlimPackageOptions {
   /** re-deflate through yazl even when a raw copy would do (tests) */
   repack?: boolean;
@@ -222,8 +224,8 @@ async function filterNativePackageArchive(
   platform: Platform,
   options: SlimPackageOptions,
 ): Promise<{ bundles: number; entries: number }> {
-  await fs.ensureDir(path.dirname(output));
-  const scratchDir = await fs.mkdtemp(
+  await ensureDir(path.dirname(output));
+  const scratchDir = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), 'rnu-native-package-entry-'),
   );
   const sourceZip = await openZip(source);
@@ -231,7 +233,7 @@ async function filterNativePackageArchive(
   // entry count decide whether plain (non-zip64) headers are enough
   const rawCopy =
     !options.repack &&
-    fitsRawZip((await fs.stat(source)).size, sourceZip.entryCount);
+    fitsRawZip((await fs.promises.stat(source)).size, sourceZip.entryCount);
   const sink: SlimSink = rawCopy
     ? new RawCopySink(output)
     : new RepackSink(output);
@@ -275,7 +277,7 @@ async function filterNativePackageArchive(
             const index = nestedArchiveIndex++;
             const nestedSource = path.join(scratchDir, `${index}.source.hap`);
             const nestedOutput = path.join(scratchDir, `${index}.slim.hap`);
-            await extractEntryToFile(sourceZip, entry, nestedSource);
+            await writeEntry(entry, sourceZip, nestedSource);
             const nestedResult = await filterNativePackageArchive(
               nestedSource,
               nestedOutput,
@@ -301,6 +303,9 @@ async function filterNativePackageArchive(
             if (resolvedEntry.kind === 'bundle') {
               includedBundles += 1;
             }
+          } else if (entry.fileName === serverOnlyEntries[platform]) {
+            await sink.copyEntryDeflated(sourceZip, entry);
+            includedEntries += 1;
           }
           sourceZip.readEntry();
         } catch (error) {
@@ -317,13 +322,13 @@ async function filterNativePackageArchive(
     await sink.abort();
     throw error;
   } finally {
-    await fs.remove(scratchDir);
+    await remove(scratchDir);
   }
 }
 
 /**
  * Repack a native package with only the bundle and resources required by
- * package-origin diffs. Entry names and nested Harmony HAP structure are kept.
+ * package-origin diffs, plus the server-only entries. Entry names and nested Harmony HAP structure are kept.
  */
 export async function createSlimNativePackage(
   source: string,
@@ -338,7 +343,7 @@ export async function createSlimNativePackage(
     options,
   );
   if (result.bundles === 0) {
-    await fs.remove(output);
+    await remove(output);
     throw new Error(`Bundle entry not found in native package: ${source}`);
   }
 }

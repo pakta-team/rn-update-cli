@@ -5,7 +5,7 @@
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
-import { execFile as execFileCallback, spawnSync } from 'child_process';
+import { execFile as execFileCallback } from 'child_process';
 import { promisify } from 'util';
 
 export interface CommitInfo {
@@ -17,14 +17,6 @@ export interface CommitInfo {
 }
 
 const execFile = promisify(execFileCallback);
-
-export function getCurrentCommit() {
-  const result = spawnSync('git', ['rev-parse', 'HEAD']);
-  if (result.status !== 0) {
-    throw new Error('Not a git repository');
-  }
-  return result.stdout.toString().trim();
-}
 
 async function gitOutput(args: string[], cwd = process.cwd()): Promise<string> {
   const { stdout } = await execFile('git', args, {
