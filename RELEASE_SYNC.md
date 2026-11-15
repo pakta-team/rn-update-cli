@@ -1,5 +1,5 @@
 <!--
-[INPUT]: 冻结源提交、公开仓库原始 HEAD、1.2.0 构建与仓库外验证证据
+[INPUT]: 冻结源提交、公开仓库原始 HEAD、1.2.0 构建与仓库外验证证据、远端 runner 排队诊断
 [OUTPUT]: 提供本次公开 CLI 同步的取舍、候选身份、验证结果与发版边界
 [POS]: 独立仓库的同步回执，不进入 npm 制品，不代替远端 Actions 或真实设备验收
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -15,7 +15,7 @@
 
 - `src/**/*.ts` 的生产实现逐字节对应冻结源，包含纯 JSON parse 入口、ZIP 显式写偏移、流式上传、渠道身份与包解析精简。
 - 移除已被源实现替代的通用 Parser 类、旧 latest-version 目录、plugin-config 及两份重复旧测试；保留公开仓库的历史 Hermes 审查记录。
-- 保留 `ci` 名称、main 分支、Blacksmith runner、覆盖率和发布 dry-run；吸收固定 HBC96、HBC98 两修订版、HBC99 的四组真实编译器矩阵与 Node18.17 完整烟雾。
+- 保留 `ci` 名称、main 分支、覆盖率和发布 dry-run；CI 与通知统一使用 GitHub 托管 `ubuntu-latest`，吸收固定 HBC96、HBC98 两修订版、HBC99 的四组真实编译器矩阵与 Node18.17 完整烟雾。
 - 保留手推 tag 与手动选择已有 tag 的 OIDC 发布入口，显式检出 `refs/tags/...`；npm 成功后才创建 GitHub Release。
 - 通知监听名称保持一致，`codex/verify-*` 分支不产生 issue 通知，移除上游个人账号提及。
 - GEB 根地图改为独立 L1，补齐模块地图及缺失文件契约；Hermes 自动发现只检查本仓库依赖，跨仓编译器由 `HERMESC` 显式传入。
@@ -44,12 +44,14 @@ SHA256：`af9143ce29bee5638c205c0d5ca636c649d974b8165305d1185469af451885bb`。
 
 首轮单测的四格式 JSON 子进程用例超过默认 5 秒；定向复验 5/5 通过。第二轮出现一次 Bun 子进程 `ETIMEDOUT`，异步错误负控定向复验 3 pass / 4 skip。相同代码最终全量 13.29 秒通过，未调整超时、删除断言或跳过失败用例；保留两轮原始失败日志。
 
-69 个 skip 属于真实 Hermes 编译器、原生差分工具或 Unix 进程夹具的环境边界，**不计为通过**。本轮没有触发远端 Actions、重新执行四组 Linux Hermes 矩阵或进行设备验收。
+69 个 skip 属于真实 Hermes 编译器、原生差分工具或 Unix 进程夹具的环境边界，**不计为通过**。上述本地验收不代表远端四组 Linux Hermes 矩阵或设备验收通过。
+
+发布阶段 main 已推送 `6c51f322d89ea2a72aae82478468fe0234de3779`，远端 CI `43687121870` 的 8 个 job 均未获得机器（`runner_id=0`、零步骤）。进一步核实 2026-09-14、09-18、09-27 三轮历史 CI：相同 `blacksmith-4vcpu-ubuntu-2404` 标签均零步骤、零 runner，并在排队 24 小时后取消。因此仅把 CI 五处和通知两处 runner 改为 `ubuntu-latest`，不改变测试、package、lib 或候选 tgz；远端验证结果仍须以新提交的 Actions 为准。
 
 证据、原始 tracked 文件备份、下载校验、真实 tgz 和独立消费者位于仓库外 `%TEMP%/pakta-public-cli-sync-20261115-o24mv912/`，最终机器回执为 `final-verification.json`。
 
 ## 改进建议
 
-推送后先观察本仓库 Actions 的固定编译器矩阵，再按用户已选择的 `v1.2.0` tag 发版。当前回执只证明本地候选，不把未运行的远端和设备验证记为完成。
+runner 修复提交推送后先观察本仓库 Actions 的固定编译器矩阵，再按用户已选择的 `v1.2.0` tag 发版。当前回执只证明本地候选，不把未运行的远端和设备验证记为完成。
 
-源仓库 HEAD 与 CLI 子树保持不改；目标 HEAD、暂存区保持原状。本轮未提交、推送、创建 tag、发布 npm/GitHub Release 或发送 issue 通知。
+源仓库 HEAD 与 CLI 子树保持不改。初次本地验收时目标 HEAD、暂存区保持原状，未执行提交、推送或发布；其后用户授权发布，main 已提交推送，runner 修复等待统一提交。此回执更新时尚未创建本次 tag、发布 npm/GitHub Release 或发送 issue 通知。

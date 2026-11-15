@@ -35,6 +35,7 @@ readme-banner.svg - 自包含 README 产品横幅，随 npm 包分发
 - Hermes base 先比较二进制字面量，再审计 pretty/raw 指令语义，未知结构和失败均回退 plain。
 - 版本由本仓库 package.json 和 scripts/prepublish.ts 管理；手推 v* tag 或显式选择已有 tag 触发发布，不依赖父仓脚本。
 - 发布保留 Node18.17 smoke、npm 内容检查与 OIDC，npm 成功后才创建 GitHub Release；CI 名称 ci 和发布名称共同约束通知监听，codex/verify-* 分支不发送通知。
+- CI 与通知统一使用 GitHub 托管 ubuntu-latest；发布期间发现旧 Blacksmith 标签历史多次排队 24 小时未获机器，不再沿用该外部 runner 依赖。
 - 测试使用 --parallel=1 隔离环境变量和模块替身；缺少真实编译器或差分工具的 skip 单独记录。
 
 同步来源：冻结提交 69aac6a8f4f1c7a4b5b910b49940f0203f29699d 的 rn-update-cli 子树。

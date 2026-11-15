@@ -1,6 +1,6 @@
-# [INPUT]: 依赖 CLI 依赖锁、命令/上传/Hermes 回归及固定编译器夹具
+# [INPUT]: 依赖 GitHub 托管 Ubuntu runner、CLI 依赖锁、命令/上传/Hermes 回归及固定编译器夹具
 # [OUTPUT]: 提供 CLI 静态检查、单测、Node18 smoke 与真实 Hermes 矩阵结果
-# [POS]: 独立公开 CLI 的根目录验证入口，与 SDK 发布流程解耦
+# [POS]: 独立公开 CLI 的根目录验证入口，不依赖未分配机器的外部 runner，与 SDK 发布流程解耦
 # [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 name: ci
 
@@ -28,7 +28,7 @@ defaults:
 jobs:
   lint:
     name: CLI lint and typecheck
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -45,7 +45,7 @@ jobs:
 
   test:
     name: CLI unit tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -68,7 +68,7 @@ jobs:
 
   node18-smoke:
     name: CLI build and Node 18.17 smoke
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -103,7 +103,7 @@ jobs:
 
   hermes-integration:
     name: CLI Hermes HBC ${{ matrix.hbc }}${{ matrix.suffix }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -207,7 +207,7 @@ jobs:
           if-no-files-found: ignore
 
   publish-dry-run:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
